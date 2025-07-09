@@ -4,5 +4,5 @@ requires-python = ">=3.13"
 
 [[package]]
 name = "ornamentalist"
-version = "1.0.0"
+version = "2.0.0"
 source = { editable = "." }

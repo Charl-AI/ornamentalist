@@ -4,6 +4,8 @@ Ornamentalist is a tiny library for configuring functions with fixed hyperparame
 
 The core thing ornamentalist does is it allows you to specify the parameters of a function as `Configurable`. You can then use the `ornamentalist.configure()` decorator to replace the function with a `partial` version of itself. The new partial function has all configurable parameters fixed to values supplied by you at the start of the program. This pattern allows you to avoid the work of plumbing hyperparameters around your code, without resorting to global variables or config God-objects.
 
+You can use ornamentalist alongside your favourite configuration libraries like argparse or hydra. We also provide the optional `ornamentalist.cli()` feature, which automatically generates a CLI for your program.
+
 I encourage you to read the short [blog post](https://charl-ai.github.io/blog/args) to better understand the motivation behind this libary and why I think ornamentalist is a good solution. For worked examples of how to use ornamentalist with other tools such as hydra, argparse, or submitit, check out the `examples/` directory.
 
 You can install ornamentalist with pip:
@@ -28,7 +30,6 @@ Using ornamentalist is straightforward:
 Tip: You can find this file in `examples/basics.py`. Download and play with it to get a feel for ornamentalist :).
 
 ```python
-
 import ornamentalist
 from ornamentalist import Configurable
 
@@ -58,8 +59,10 @@ class MyClass:
 
 
 if __name__ == "__main__":
-    # usually config would be supplied by argparse or
-    # hydra etc. but we will hardcode it here...
+    # you can manually supply config with argparse, hydra etc.
+    # we also provide ornamentalist.cli() to automatically
+    # generate a basic CLI.
+    # But we will hardcode it for this example...
     config = {
         "add_n": {"n": 5},
         # greeting_config and myclass_init are the
@@ -67,11 +70,11 @@ if __name__ == "__main__":
         "greeting_config": {"name": "Alice"},
         "myclass.init": {"a": 4.5},
     }
-    ornamentalist.setup_config(config)
+    ornamentalist.setup(config)
 
     add_n(10)
     greet()
-    c = MyClass()
+    MyClass()
 
     # you can access the config dict anywhere in your program
     # through `ornamentalist.get_config()`

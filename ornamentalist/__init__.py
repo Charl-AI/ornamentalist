@@ -2,65 +2,35 @@
 
 # Written by C Jones, 2025; MIT License.
 
+import argparse
+import dataclasses
 import functools
 import inspect
+import itertools
 import logging
-from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ornamentalist")
 
 
-__all__ = ["setup_config", "get_config", "configure", "Configurable"]
+__all__ = ["setup", "cli", "get_config", "configure", "Configurable"]
 
 
-@dataclass(frozen=True)
+# --- global state ---
+
+
+@dataclasses.dataclass(frozen=True)
 class _Cfg:
     config: dict
 
 
 _GLOBAL_CONFIG: _Cfg | None = None
 _CONFIG_IS_SET = False
-# tracks whether we have tried to call any configurable
-# functions yet (not safe to change config after this)
-_ORNAMENTALIST_USED = False
+_CONFIGURABLE_FUNCTIONS: list["_ConfigurableFn"] = []
 
 
-def setup_config(config: dict, force: bool = False) -> None:
-    """Setup configuration for use in decorated functions.
-    Must be called before any decorated functions.
-
-    `config` is expected to be a nested dictionary mapping
-    function names to dictionaries containing their args and
-    configuration values.
-
-    Examples:
-
-    ```python
-    config = {"my_function": {"param_1": value, "param_2": value2}}
-    setup_config(config)
-    ```
-    """
-    global _GLOBAL_CONFIG, _CONFIG_IS_SET
-    if _ORNAMENTALIST_USED:
-        raise ValueError(
-            "Changing configuration after calling a configured function is not supported."
-        )
-    if _CONFIG_IS_SET and not force:
-        raise ValueError(
-            "Configuration has already been set. Use force=True to override."
-        )
-
-    c = _Cfg(config)
-    _GLOBAL_CONFIG = c
-    _CONFIG_IS_SET = True
-
-
-def get_config() -> dict:
-    if _GLOBAL_CONFIG is None or not _CONFIG_IS_SET:
-        raise ValueError("Attempted to get config before `setup_config` is called.")
-    return _GLOBAL_CONFIG.config
+# --- core ---
 
 
 class _Configurable:
@@ -74,14 +44,141 @@ argument for any parameter you wish to be configured by ornamentalist."""
 Configurable: Any = _Configurable()
 
 
-def configure(name: str | None = None, verbose: bool = False):
-    """Decorate a function with @configure() to inject
-    replace some or all of its arguments with values from
-    your program configuration."""
+@dataclasses.dataclass
+class _ConfigurableFn:
+    name: str  # either original_func.__name__ or the custom name given by the decorator
+    original_func: Callable
+    params_to_inject: list[str]
+    signature: inspect.Signature
+    cached_partial: Callable | None = None
+    cli_defaults: dict[str, Any] | None = None
+    verbose: bool = False
+
+    def __call__(self, *args, **kwargs):
+        if self.cached_partial is None:
+            fn_name = (
+                f"{self.original_func.__module__}.{self.original_func.__qualname__}"
+            )
+            config = get_config()
+            if self.name not in config:
+                raise KeyError(
+                    f"Configuration for '{self.name}' not found in global config, got {get_config()=}"
+                )
+            injected_params = config[self.name]
+            if self.verbose:
+                log.info(msg=f"Injecting parameters {injected_params} into {fn_name}")
+
+            if set(injected_params.keys()) != set(self.params_to_inject):
+                raise ValueError(
+                    f"Tried to inject parameters into {fn_name}, but "
+                    + "parameters injected by config do not match "
+                    + "the parameters marked as Configurable:\n"
+                    + f"{set(injected_params)=} != {set(self.params_to_inject)=}"
+                )
+
+            self.cached_partial = functools.partial(
+                self.original_func, **injected_params
+            )
+        return self.cached_partial(*args, **kwargs)
+
+    def reset(self):
+        self.cached_partial = None
+
+
+def setup(config: dict | argparse.Namespace, force: bool = False) -> None:
+    """Setup configuration for use in decorated functions.
+    Must be called before any decorated functions.
+
+    You have two options for the format you pass config:
+
+        1. A nested dict mapping function names to dicts
+           containing their arg names and values.
+        2. An argparse.Namespace object mapping
+           fn_name.param_name to values.
+
+    Option 1 is best if you are manually preparing the config dict.
+    Option 2 is designed to work with the ornamentalist.cli() feature.
+
+    Examples:
+
+    ```python
+    # option 1
+    config = {"my_function": {"param_1": value, "param_2": value2}}
+    setup(config)
+
+    # option 2 (usually config will be the output of ornamentalist.cli())
+    config = argparse.Namespace(
+        **{"my_function.param_1": value, "my_function.param_2": value2}
+    )
+    setup(config)
+    ```
+    """
+    global _GLOBAL_CONFIG, _CONFIG_IS_SET
+    if _CONFIG_IS_SET and not force:
+        raise ValueError(
+            "Configuration has already been set. Use force=True to override."
+        )
+
+    if force:
+        for f in _CONFIGURABLE_FUNCTIONS:
+            f.reset()
+
+    if isinstance(config, argparse.Namespace):
+        config_dict = {}
+        for fn in _CONFIGURABLE_FUNCTIONS:
+            if fn.name not in config_dict:
+                config_dict[fn.name] = {}
+            for param_name in fn.params_to_inject:
+                arg_name = f"{fn.name}.{param_name}"
+                if hasattr(config, arg_name):
+                    config_dict[fn.name][param_name] = getattr(config, arg_name)
+        config = config_dict
+
+    if not config:
+        log.warning("The configuration is empty. No parameters will be injected.")
+
+    c = _Cfg(config)
+    _GLOBAL_CONFIG = c
+    _CONFIG_IS_SET = True
+
+
+def get_config() -> dict:
+    if _GLOBAL_CONFIG is None or not _CONFIG_IS_SET:
+        raise ValueError("Attempted to get config before `setup` has been called.")
+    return _GLOBAL_CONFIG.config
+
+
+def configure(
+    name: str | None = None,
+    verbose: bool = False,
+    cli_defaults: dict | None = None,
+):
+    """Decorate a function with @configure() to replace all Configurable arguments
+    with values from your program configuration.
+
+    Usage:
+    ```python
+        @ornamentalist.configure()
+        def parametric_fn(x: int, param: float = Configurable):
+            ... # does something with x and param
+
+        config = {"parametric_fn": {"param": 1.5}}
+        setup_config(config)
+        parametric_fn(x=2) # param is now set to 1.5, so we don't pass it here
+
+    ```
+    You can think of this decorator as lazily creating a partial function. I.e.
+    the above example is approximately equivalent to:
+
+    ```python
+        parametric_fn = functools.partial(parametric_fn, param=1.5)
+        parametric_fn(x=2)
+
+    ```
+
+    """
 
     def decorator(func):
-        _cached_partial = None
-
         nonlocal name
         name = name if name is not None else func.__name__
 
@@ -95,28 +192,179 @@ def configure(name: str | None = None, verbose: bool = False):
                 log.info("No Configurable parameters found, returning function as-is.")
             return func
 
+        configurable_fn = _ConfigurableFn(
+            original_func=func,
+            name=name,
+            params_to_inject=params_to_inject,
+            signature=signature,
+            verbose=verbose,
+            cli_defaults=cli_defaults,
+        )
+        _CONFIGURABLE_FUNCTIONS.append(configurable_fn)
+
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            nonlocal _cached_partial
-            if _cached_partial is None:
-                injected_params = get_config()[name]
-                if verbose:
-                    log.info(
-                        msg=f"Injecting parameters {injected_params} into {func.__name__}"
-                    )
-
-                    if set(injected_params.keys()) != set(params_to_inject):
-                        raise ValueError(
-                            "Parameters injected by config do not match "
-                            + "the parameters marked as Configurable: "
-                            + f"{set(injected_params)=} != {set(params_to_inject)=}"
-                        )
-
-                _cached_partial = functools.partial(func, **injected_params)
-                global _ORNAMENTALIST_USED
-                _ORNAMENTALIST_USED = True
-            return _cached_partial(*args, **kwargs)
+            return configurable_fn(*args, **kwargs)
 
         return wrapper
 
     return decorator
+
+
+# --- cli (optional extra feature) ---
+
+
+# we (controversially) use this to enable argparse to handle --arg=True and
+# --arg=False properly. Without it, any non-empty arg evaluates to True.
+# The canonical way of doing this in argparse is to have --arg and --no-arg
+# flags, with store_true and store_false actions, respectively. However,
+# I prefer our way because it more consistent with the other args. It
+# also makes it easier to sweep over both configs with '--arg True False'
+def _str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("true", "t"):
+        return True
+    elif v.lower() in ("false", "f"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
+def cli() -> list[argparse.Namespace]:
+    """Automatically generates a CLI for your program using argparse.
+    All functions marked with ornamentalist.configure() will have Configurable
+    parameters show up as options in the CLI.
+
+    The returned argparse.Namespace object(s) can be passed directly to
+    ornamentalist.setup() to configure your program.
+
+    Note that automatic CLI generation only works with the following built-in
+    types (determined by the type hints given to Configurable args):
+        - int
+        - float
+        - bool
+        - str
+    If you do not use type annotations in your function signatures, argparse
+    will default to treating them as strings. You will then have to manually
+    deal with casting them to whatever type you wish to use.
+
+    This function comes with support for grid search over hyperparameters.
+    Simply provide a list of values for each argument on the command line.
+    The function will then return a list of argparse.Namespace objects
+    corresponding to the cartesian product of all arguments given.
+
+    Usage (single experiment):
+    ```python
+
+        @ornamentalist.configure()
+        def parametric_fn(x: int, param: float = Configurable):
+            ... # does something with x and param
+
+        configs = ornamentalist.cli()
+        assert len(configs) == 0
+        config = configs[0]
+        ornamentalist.setup(config)
+        parametric_fn(x=2)
+
+        # run with python script.py --parametric_fn.param 1.5
+
+    ```
+
+    Usage (sweep):
+    ```python
+
+        @ornamentalist.configure()
+        def parametric_fn(x: int, param: float = Configurable):
+            ... # does something with x and param
+
+        configs = ornamentalist.cli(cartesian_sweep=True)
+
+        # running sweep in a loop... you can also delegate to
+        # other processes or jobs using submitit etc.
+        for config in configs:
+            ornamentalist.setup(args)
+            parametric_fn(x=2)
+
+        # run with python script.py --parametric_fn.param 1.5 2.0 2.5
+
+    ```
+
+    """
+    ALLOWED_TYPES = [int, float, bool, str]
+    parser = argparse.ArgumentParser()
+
+    for f in _CONFIGURABLE_FUNCTIONS:
+        fn_name = f"{f.original_func.__module__}.{f.original_func.__qualname__}"
+        group = parser.add_argument_group(
+            f.name, description=f"Hyperparameters for {fn_name}"
+        )
+
+        for param_name in f.params_to_inject:
+            param = f.signature.parameters[param_name]
+
+            # something has gone very wrong if params_to_inject contains
+            # non-Configurable parameters
+            assert param.default is Configurable
+            anno = param.annotation
+
+            if anno is inspect.Parameter.empty:
+                msg = (
+                    f"No type annotation was provided for '{param_name}' "
+                    + f"in function {fn_name}.\nArgparse will default to treating "
+                    + "it as a string and you will have to manually cast to other types."
+                )
+                log.warning(msg)
+
+            if anno not in ALLOWED_TYPES and anno is not inspect.Parameter.empty:
+                msg = (
+                    f"Tried to create a parser for {fn_name}, but "
+                    + f"parameter '{param_name}' has type annotation '{anno}'.\n"
+                    + f"Automatic parser generation only works with types: {ALLOWED_TYPES}.\n"
+                    + "(If you provide no annotation, argparse will treat it as 'str')"
+                )
+                raise ValueError(msg)
+
+            kwargs = {}
+            kwargs["metavar"] = "\b"  # disable ALL_CAPS repetition of arg in help
+            type_name = (
+                anno.__qualname__
+                if anno is not inspect.Parameter.empty
+                else "Unknown [string fallback]"
+            )
+            kwargs["help"] = f"Type: {type_name}"
+
+            if anno is bool:
+                kwargs["type"] = _str2bool  # custom boolean handling
+            else:
+                kwargs["type"] = anno
+
+            if f.cli_defaults is not None and param_name in f.cli_defaults:
+                kwargs["default"] = f.cli_defaults[param_name]
+                kwargs["help"] += f" (optional), default={f.cli_defaults[param_name]}"
+            else:
+                kwargs["required"] = True
+                kwargs["help"] += " (required)"
+
+            # allow lists of args for sweeps
+            kwargs["nargs"] = "+"
+
+            group.add_argument(f"--{f.name}.{param_name}", **kwargs)
+
+    args_dict = vars(parser.parse_args())
+    param_names = sorted(args_dict.keys())
+    value_lists = []
+    for name in param_names:
+        value = args_dict[name]
+        if not isinstance(value, list):
+            value_lists.append([value])  # Wrap any single values in a list
+        else:
+            value_lists.append(value)
+    product = itertools.product(*value_lists)
+
+    configs = []
+    for combo in product:
+        config_ns = argparse.Namespace(**dict(zip(param_names, combo)))
+        configs.append(config_ns)
+
+    return configs

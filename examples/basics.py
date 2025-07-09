@@ -1,8 +1,9 @@
+"""Basic usage of ornamentalist."""
+
 import ornamentalist
 from ornamentalist import Configurable
 
 
-# basic usage of ornamentalist...
 # setting verbose=True is useful for debugging
 @ornamentalist.configure(verbose=True)
 def add_n(x: int, n: int = Configurable):
@@ -27,8 +28,10 @@ class MyClass:
 
 
 if __name__ == "__main__":
-    # usually config would be supplied by argparse or
-    # hydra etc. but we will hardcode it here...
+    # you can manually supply config with argparse, hydra etc.
+    # we also provide ornamentalist.cli() to automatically
+    # generate a basic CLI.
+    # But we will hardcode it for this example...
     config = {
         "add_n": {"n": 5},
         # greeting_config and myclass_init are the
@@ -36,7 +39,7 @@ if __name__ == "__main__":
         "greeting_config": {"name": "Alice"},
         "myclass.init": {"a": 4.5},
     }
-    ornamentalist.setup_config(config)
+    ornamentalist.setup(config)
 
     add_n(10)
     greet()
@@ -45,3 +48,10 @@ if __name__ == "__main__":
     # you can access the config dict anywhere in your program
     # through `ornamentalist.get_config()`
     assert ornamentalist.get_config() == config
+
+# Output:
+# > python examples/basics.py
+# > INFO:ornamentalist:Injecting parameters {'n': 5} into __main__.add_n
+# > 15
+# > Hello, Alice
+# > 4.5
