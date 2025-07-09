@@ -22,8 +22,8 @@ Using ornamentalist is straightforward:
 
 1. Mark hyperparameters as configurable by setting their default value to `ornamentalist.Configurable`.
 2. Decorate the function with `@ornamentalist.configure()`.
-3. Create a config dictionary at the start of your program.
-4. Call `ornamentalist.setup_config(config)` before running any configurable functions.
+3. Create a config dictionary at the start of your program (either with `ornamentalist.cli()` or your favourite configuration tool).
+4. Call `ornamentalist.setup(config)` before running any configurable functions.
 
 ## Quickstart
 
