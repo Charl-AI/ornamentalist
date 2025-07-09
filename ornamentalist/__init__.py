@@ -8,7 +8,7 @@ import functools
 import inspect
 import itertools
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, TypeAlias
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ornamentalist")
@@ -16,21 +16,13 @@ log = logging.getLogger("ornamentalist")
 
 __all__ = ["setup", "cli", "get_config", "configure", "Configurable"]
 
+# --- types ---
 
-# --- global state ---
-
-
-@dataclasses.dataclass(frozen=True)
-class _Cfg:
-    config: dict
-
-
-_GLOBAL_CONFIG: _Cfg | None = None
-_CONFIG_IS_SET = False
-_CONFIGURABLE_FUNCTIONS: list["_ConfigurableFn"] = []
-
-
-# --- core ---
+ConfigDict: TypeAlias = dict[str, dict[str, Any]]
+"""A nested dict mapping function names to dicts containing
+their parameters and values. Input format for ornamentalist.setup().
+Example: config = {"my_func": {"param_1": value_1, "param_2": value_2}}
+"""
 
 
 class _Configurable:
@@ -38,10 +30,10 @@ class _Configurable:
         return "<CONFIGURABLE_PARAM>"
 
 
+Configurable: Any = _Configurable()
 """Mark arguments as Configurable to tell the configure decorator
 about which parameters need to be replaced. Use it as a default
 argument for any parameter you wish to be configured by ornamentalist."""
-Configurable: Any = _Configurable()
 
 
 @dataclasses.dataclass
@@ -85,31 +77,37 @@ class _ConfigurableFn:
         self.cached_partial = None
 
 
-def setup(config: dict | argparse.Namespace, force: bool = False) -> None:
+@dataclasses.dataclass(frozen=True)
+class _Cfg:
+    config: dict
+
+
+# --- global state ---
+
+
+_GLOBAL_CONFIG: _Cfg | None = None
+_CONFIG_IS_SET = False
+_CONFIGURABLE_FUNCTIONS: list[_ConfigurableFn] = []
+
+
+# --- core ---
+
+
+def setup(config: ConfigDict, force: bool = False) -> None:
     """Setup configuration for use in decorated functions.
-    Must be called before any decorated functions.
+    Must be called before invoking any decorated functions.
 
-    You have two options for the format you pass config:
+    The config dict should take the form of a nested dict,
+    mapping function names to dicts containing each function's
 
-        1. A nested dict mapping function names to dicts
-           containing their arg names and values.
-        2. An argparse.Namespace object mapping
-           fn_name.param_name to values.
+    Raises a ValueError if you try to call setup a second time.
+    If this is what you want (i.e. you want to reconfigure
+    your functions), you may call setup with Force=True.
 
-    Option 1 is best if you are manually preparing the config dict.
-    Option 2 is designed to work with the ornamentalist.cli() feature.
-
-    Examples:
+    Example:
 
     ```python
-    # option 1
-    config = {"my_function": {"param_1": value, "param_2": value2}}
-    setup(config)
-
-    # option 2 (usually config will be the output of ornamentalist.cli())
-    config = argparse.Namespace(
-        **{"my_function.param_1": value, "my_function.param_2": value2}
-    )
+    config = {"my_func": {"param_1": value_1, "param_2": value_2}}
     setup(config)
     ```
     """
@@ -123,17 +121,6 @@ def setup(config: dict | argparse.Namespace, force: bool = False) -> None:
         for f in _CONFIGURABLE_FUNCTIONS:
             f.reset()
 
-    if isinstance(config, argparse.Namespace):
-        config_dict = {}
-        for fn in _CONFIGURABLE_FUNCTIONS:
-            if fn.name not in config_dict:
-                config_dict[fn.name] = {}
-            for param_name in fn.params_to_inject:
-                arg_name = f"{fn.name}.{param_name}"
-                if hasattr(config, arg_name):
-                    config_dict[fn.name][param_name] = getattr(config, arg_name)
-        config = config_dict
-
     if not config:
         log.warning("The configuration is empty. No parameters will be injected.")
 
@@ -142,7 +129,8 @@ def setup(config: dict | argparse.Namespace, force: bool = False) -> None:
     _CONFIG_IS_SET = True
 
 
-def get_config() -> dict:
+def get_config() -> ConfigDict:
+    """Returns the ConfigDict that you used in ornamentalist.setup()."""
     if _GLOBAL_CONFIG is None or not _CONFIG_IS_SET:
         raise ValueError("Attempted to get config before `setup` has been called.")
     return _GLOBAL_CONFIG.config
@@ -151,10 +139,14 @@ def get_config() -> dict:
 def configure(
     name: str | None = None,
     verbose: bool = False,
-    cli_defaults: dict | None = None,
+    cli_defaults: dict[str, Any] | None = None,
 ):
     """Decorate a function with @configure() to replace all Configurable arguments
     with values from your program configuration.
+
+    If you are using the ornamentalist.cli() feature, you may provide default
+    arguments for each Configurable parameter by passing a dict to cli_defaults dict.
+    If you are not using ornamentalist.cli(), cli_defaults will be ignored.
 
     Usage:
     ```python
@@ -231,12 +223,24 @@ def _str2bool(v):
         raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
-def cli() -> list[argparse.Namespace]:
+def _namespace2dict(config_ns: argparse.Namespace) -> ConfigDict:
+    config_dict = {}
+    for flat_key, value in vars(config_ns).items():
+        if "." in flat_key:
+            fn_name, param_name = flat_key.split(".", 1)
+            if fn_name not in config_dict:
+                config_dict[fn_name] = {}
+            config_dict[fn_name][param_name] = value
+    return config_dict
+
+
+def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
     """Automatically generates a CLI for your program using argparse.
     All functions marked with ornamentalist.configure() will have Configurable
-    parameters show up as options in the CLI.
+    parameters show up as options in the CLI. If you want to add extra
+    CLI parameters, you can pass a pre-existing argparse parser to this function.
 
-    The returned argparse.Namespace object(s) can be passed directly to
+    The returned ConfigDict object(s) can be passed to
     ornamentalist.setup() to configure your program.
 
     Note that automatic CLI generation only works with the following built-in
@@ -251,10 +255,10 @@ def cli() -> list[argparse.Namespace]:
 
     This function comes with support for grid search over hyperparameters.
     Simply provide a list of values for each argument on the command line.
-    The function will then return a list of argparse.Namespace objects
+    The function will then return a list of ConfigDict objects
     corresponding to the cartesian product of all arguments given.
 
-    Usage (single experiment):
+    Usage:
     ```python
 
         @ornamentalist.configure()
@@ -262,23 +266,6 @@ def cli() -> list[argparse.Namespace]:
             ... # does something with x and param
 
         configs = ornamentalist.cli()
-        assert len(configs) == 0
-        config = configs[0]
-        ornamentalist.setup(config)
-        parametric_fn(x=2)
-
-        # run with python script.py --parametric_fn.param 1.5
-
-    ```
-
-    Usage (sweep):
-    ```python
-
-        @ornamentalist.configure()
-        def parametric_fn(x: int, param: float = Configurable):
-            ... # does something with x and param
-
-        configs = ornamentalist.cli(cartesian_sweep=True)
 
         # running sweep in a loop... you can also delegate to
         # other processes or jobs using submitit etc.
@@ -292,7 +279,8 @@ def cli() -> list[argparse.Namespace]:
 
     """
     ALLOWED_TYPES = [int, float, bool, str]
-    parser = argparse.ArgumentParser()
+    if parser is None:
+        parser = argparse.ArgumentParser()
 
     for f in _CONFIGURABLE_FUNCTIONS:
         fn_name = f"{f.original_func.__module__}.{f.original_func.__qualname__}"
@@ -365,6 +353,6 @@ def cli() -> list[argparse.Namespace]:
     configs = []
     for combo in product:
         config_ns = argparse.Namespace(**dict(zip(param_names, combo)))
-        configs.append(config_ns)
+        configs.append(_namespace2dict(config_ns))
 
     return configs

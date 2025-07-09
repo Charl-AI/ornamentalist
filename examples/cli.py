@@ -15,7 +15,7 @@ if __name__ == "__main__":
 
     # the current setup allows you to run sweeps by specifying multiple args
     # if you only ever want to run one job at a time, you can do:
-    #     assert len(configs) == 0
+    #     assert len(configs) == 1
     #     ornamentalist.setup(configs[0])
     #     multiply()
 
@@ -26,25 +26,29 @@ if __name__ == "__main__":
 # Examples:
 
 # --- 1. Single run:
+
 # > python examples/cli.py --multiply.a  2 --multiply.b  4
-# > [Namespace(**{'multiply.a': 2, 'multiply.b': 4})]
+# > [{'multiply': {'a': 2, 'b': 4}}]
 # > 8
 
 # --- 2. Sweep using default value for a:
+
 # > python examples/cli.py --multiply.b 2 3
-# > [Namespace(**{'multiply.a': 5, 'multiply.b': 2}), Namespace(**{'multiply.a': 5, 'multiply.b': 3})]
+# > [{'multiply': {'a': 5, 'b': 2}}, {'multiply': {'a': 5, 'b': 3}}]
 # > 10
 # > 15
 
 # --- 3. Sweep over configured values of a and b:
+
 # > python examples/cli.py --multiply.a 1 2 --multiply.b 2 3
-# > [Namespace(**{'multiply.a': 1, 'multiply.b': 2}), Namespace(**{'multiply.a': 1, 'multiply.b': 3}), Namespace(**{'multiply.a': 2, 'multiply.b': 2}), Namespace(**{'multiply.a': 2, 'multiply.b': 3})]
+# > [{'multiply': {'a': 1, 'b': 2}}, {'multiply': {'a': 1, 'b': 3}}, {'multiply': {'a': 2, 'b': 2}}, {'multiply': {'a': 2, 'b': 3}}]
 # > 2
 # > 3
 # > 4
 # > 6
 
 # --- 4. Auto-generated help message:
+
 # python examples/cli.py --help
 # usage: cli.py [-h] [--multiply.a  ...]] --multiply.b  ...]
 #
