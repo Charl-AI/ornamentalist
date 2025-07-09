@@ -40,7 +40,7 @@ if __name__ == "__main__":
 
     add_n(10)
     greet()
-    c = MyClass()
+    MyClass()
 
     # you can access the config dict anywhere in your program
     # through `ornamentalist.get_config()`
