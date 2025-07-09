@@ -163,7 +163,7 @@ def configure(
             ... # does something with x and param
 
         config = {"parametric_fn": {"param": 1.5}}
-        setup_config(config)
+        setup(config)
         parametric_fn(x=2) # param is now set to 1.5, so we don't pass it here
 
     ```
