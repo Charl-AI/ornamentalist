@@ -1,5 +1,7 @@
 """Using the ornamentalist CLI generation feature."""
 
+from typing import Literal
+
 import ornamentalist
 from ornamentalist import Configurable
 
@@ -7,7 +9,7 @@ from ornamentalist import Configurable
 @ornamentalist.configure()
 def multiply(
     a: int = Configurable[5],  # 5 is the default value for the CLI, so a is optional
-    b: int = Configurable,  # no default value given, so b is required in the CLI
+    b: Literal[2, 3, 4] = Configurable,  # no default value given
 ):
     print(a * b)
 
@@ -64,4 +66,4 @@ if __name__ == "__main__":
 #   --multiply.a  ...]
 #                         Type: int (optional), default=5
 #   --multiply.b  ...]
-#                         Type: int (required)
+#                         Type: int, choices: (2, 3, 4) (required)

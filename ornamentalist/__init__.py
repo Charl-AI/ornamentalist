@@ -8,7 +8,7 @@ import functools
 import inspect
 import itertools
 import logging
-from typing import Any, Callable, TypeAlias
+from typing import Any, Callable, Literal, TypeAlias, get_args
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ornamentalist")
@@ -245,17 +245,18 @@ def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
     The returned ConfigDict object(s) can be passed to
     ornamentalist.setup() to configure your program.
 
-    Note that automatic CLI generation only works with the following built-in
-    types (determined by the type hints given to Configurable args):
+    Note that automatic CLI generation only works if Configurable parameters
+    are annotated with one of the following built-in types:
         - int
         - float
         - bool
         - str
+        - Literal[str|int|float]
     If you do not use type annotations in your function signatures, argparse
     will default to treating them as strings. You will then have to manually
     deal with casting them to whatever type you wish to use.
 
-    This function comes with support for grid search over hyperparameters.
+    The CLI comes with support for grid search over hyperparameters.
     Simply provide a list of values for each argument on the command line.
     The function will then return a list of ConfigDict objects
     corresponding to the cartesian product of all arguments given.
@@ -292,42 +293,70 @@ def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
 
         for param_name in f.params_to_inject:
             param = f.signature.parameters[param_name]
-
-            # something has gone very wrong if params_to_inject contains
-            # non-Configurable parameters
             assert isinstance(param.default, _Configurable)
             anno = param.annotation
-
-            if anno is inspect.Parameter.empty:
-                msg = (
-                    f"No type annotation was provided for '{param_name}' "
-                    + f"in function {fn_name}.\nArgparse will default to treating "
-                    + "it as a string and you will have to manually cast to other types."
-                )
-                log.warning(msg)
-
-            if anno not in ALLOWED_TYPES and anno is not inspect.Parameter.empty:
-                msg = (
-                    f"Tried to create a parser for {fn_name}, but "
-                    + f"parameter '{param_name}' has type annotation '{anno}'.\n"
-                    + f"Automatic parser generation only works with types: {ALLOWED_TYPES}.\n"
-                    + "(If you provide no annotation, argparse will treat it as 'str')"
-                )
-                raise ValueError(msg)
-
             kwargs = {}
-            kwargs["metavar"] = "\b"  # disable ALL_CAPS repetition of arg in help
-            type_name = (
-                anno.__qualname__
-                if anno is not inspect.Parameter.empty
-                else "Unknown [string fallback]"
-            )
-            kwargs["help"] = f"Type: {type_name}"
+            kwargs["metavar"] = "\b"
 
-            if anno is bool:
-                kwargs["type"] = _str2bool  # custom boolean handling
+            is_literal = hasattr(anno, "__origin__") and anno.__origin__ is Literal
+            if is_literal:
+                literal_args = get_args(anno)
+                if not literal_args:
+                    log.warning(
+                        f"Parameter '{param_name}' in {f.name} has an empty Literal "
+                        "annotation. Skipping."
+                    )
+                    continue
+
+                arg_type = type(literal_args[0])
+                if not all(isinstance(arg, arg_type) for arg in literal_args):
+                    raise ValueError(
+                        f"All choices in Literal for '{param_name}' in {f.name} "
+                        "must be of the same type."
+                    )
+
+                if arg_type not in [str, int, float]:
+                    raise ValueError(
+                        f"Literal type for '{param_name}' in {f.name} must contain "
+                        f"str, int, or float, but got {arg_type}."
+                    )
+
+                kwargs["type"] = arg_type
+                kwargs["choices"] = literal_args
+                kwargs["help"] = (
+                    f"Type: {arg_type.__qualname__}, choices: {literal_args}"
+                )
+
             else:
-                kwargs["type"] = anno
+                if anno is inspect.Parameter.empty:
+                    msg = (
+                        f"No type annotation was provided for '{param_name}' "
+                        + f"in function {fn_name}.\nArgparse will default to treating "
+                        + "it as a string and you will have to manually cast to other types."
+                    )
+                    log.warning(msg)
+
+                if anno not in ALLOWED_TYPES and anno is not inspect.Parameter.empty:
+                    msg = (
+                        f"Tried to create a parser for {fn_name}, but "
+                        + f"parameter '{param_name}' has type annotation '{anno}'.\n"
+                        + "Automatic parser generation only works with types: "
+                        f"{ALLOWED_TYPES + [Literal]}.\n"
+                        + "(If you provide no annotation, argparse will treat it as 'str')"
+                    )
+                    raise ValueError(msg)
+
+                type_name = (
+                    anno.__qualname__
+                    if anno is not inspect.Parameter.empty
+                    else "Unknown [string fallback]"
+                )
+                kwargs["help"] = f"Type: {type_name}"
+
+                if anno is bool:
+                    kwargs["type"] = _str2bool
+                elif anno is not inspect.Parameter.empty:
+                    kwargs["type"] = anno
 
             if f.cli_defaults is not None and param_name in f.cli_defaults:
                 kwargs["default"] = f.cli_defaults[param_name]
@@ -336,9 +365,7 @@ def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
                 kwargs["required"] = True
                 kwargs["help"] += " (required)"
 
-            # allow lists of args for sweeps
             kwargs["nargs"] = "+"
-
             group.add_argument(f"--{f.name}.{param_name}", **kwargs)
 
     args_dict = vars(parser.parse_args())
@@ -347,7 +374,7 @@ def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
     for name in param_names:
         value = args_dict[name]
         if not isinstance(value, list):
-            value_lists.append([value])  # Wrap any single values in a list
+            value_lists.append([value])
         else:
             value_lists.append(value)
     product = itertools.product(*value_lists)
