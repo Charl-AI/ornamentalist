@@ -4,8 +4,11 @@ import ornamentalist
 from ornamentalist import Configurable
 
 
-@ornamentalist.configure(cli_defaults={"a": 5})
-def multiply(a: int = Configurable, b: int = Configurable):
+@ornamentalist.configure()
+def multiply(
+    a: int = Configurable[5],  # 5 is the default value for the CLI, so a is optional
+    b: int = Configurable,  # no default value given, so b is required in the CLI
+):
     print(a * b)
 
 

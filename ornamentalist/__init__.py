@@ -25,15 +25,20 @@ Example: config = {"my_func": {"param_1": value_1, "param_2": value_2}}
 """
 
 
+@dataclasses.dataclass(frozen=True)
 class _Configurable:
-    def __repr__(self):
-        return "<CONFIGURABLE_PARAM>"
+    default: Any = None
+
+    def __getitem__(self, default):
+        return _Configurable(default)
 
 
 Configurable: Any = _Configurable()
 """Mark arguments as Configurable to tell the configure decorator
 about which parameters need to be replaced. Use it as a default
-argument for any parameter you wish to be configured by ornamentalist."""
+argument for any parameter you wish to be configured by ornamentalist.
+To provide a default value for use with ornamentalist.cli(),
+use subscript notation, e.g. `param: int = Configurable[123]`."""
 
 
 @dataclasses.dataclass
@@ -136,17 +141,9 @@ def get_config() -> ConfigDict:
     return _GLOBAL_CONFIG.config
 
 
-def configure(
-    name: str | None = None,
-    verbose: bool = False,
-    cli_defaults: dict[str, Any] | None = None,
-):
+def configure(name: str | None = None, verbose: bool = False):
     """Decorate a function with @configure() to replace all Configurable arguments
     with values from your program configuration.
-
-    If you are using the ornamentalist.cli() feature, you may provide default
-    arguments for each Configurable parameter by passing a dict to cli_defaults dict.
-    If you are not using ornamentalist.cli(), cli_defaults will be ignored.
 
     Usage:
     ```python
@@ -175,9 +172,14 @@ def configure(
         name = name if name is not None else func.__name__
 
         signature = inspect.signature(func)
-        params_to_inject = [
-            p.name for p in signature.parameters.values() if p.default is Configurable
-        ]
+
+        params_to_inject = []
+        cli_defaults = {}
+        for p in signature.parameters.values():
+            if isinstance(p.default, _Configurable):
+                params_to_inject.append(p.name)
+                if p.default.default is not None:
+                    cli_defaults[p.name] = p.default.default
 
         if not params_to_inject:
             if verbose:
@@ -293,7 +295,7 @@ def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
 
             # something has gone very wrong if params_to_inject contains
             # non-Configurable parameters
-            assert param.default is Configurable
+            assert isinstance(param.default, _Configurable)
             anno = param.annotation
 
             if anno is inspect.Parameter.empty:
