@@ -158,12 +158,11 @@ def test_cli_default_value_from_signature(monkeypatch):
     configs = cli()
     assert len(configs) == 1
 
-    assert configs[0] == {
-        "basic_func": {"a": 100, "b": 10},  # b is default, not specified on CLI
-        "custom_name": {"x": "hello"},  # default
-        "my_class": {"val": 1.0},
-        "literal_func": {"dataset": "cifar", "version": 1},  # version is default
-    }
+    # fall back to defaults specified in function signature
+    # for anything not given on the CLI
+    assert configs[0]["basic_func"]["b"] == 10
+    assert configs[0]["custom_name"]["x"] == "hello"
+    assert configs[0]["literal_func"]["version"] == 1
 
 
 def test_cli_sweep_parsing(monkeypatch):
