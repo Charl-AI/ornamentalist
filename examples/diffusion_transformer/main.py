@@ -7,14 +7,14 @@ import time
 
 import submitit
 import torch
-import trainer
-from distributed import Distributed
-from dit import get_model_cls
-from mnist import get_dataloaders
 from submitit.helpers import RsyncSnapshot, clean_env
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 import ornamentalist
+from examples.diffusion_transformer.distributed import Distributed
+from examples.diffusion_transformer.dit import get_model_cls
+from examples.diffusion_transformer.mnist import get_dataloaders
+from examples.diffusion_transformer.trainer import TrainState, train
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -38,10 +38,10 @@ def main(config):
     net.to(D.device)
     ddp = DDP(net)
     opt = torch.optim.Adam(net.parameters(), lr=1e-4)
-    state = trainer.TrainState(ddp=ddp, opt=opt, global_step=0)
+    state = TrainState(ddp=ddp, opt=opt, global_step=0)
 
     train_loader, val_loader = get_dataloaders()
-    trainer.train(
+    train(
         state=state,
         train_loader=train_loader,
         val_loader=val_loader,

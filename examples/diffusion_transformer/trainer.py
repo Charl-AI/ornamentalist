@@ -4,12 +4,12 @@ import os
 import time
 
 import torch
-from distributed import Distributed, rank_zero
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torchvision.utils import save_image
 from tqdm import tqdm
 
 import ornamentalist
+from examples.diffusion_transformer.distributed import Distributed, rank_zero
 
 logging.basicConfig(level=logging.INFO)
 _log = logging.getLogger(__name__)
