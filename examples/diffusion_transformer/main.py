@@ -57,10 +57,10 @@ def launch():
     parser = argparse.ArgumentParser(formatter_class=argparse.MetavarTypeHelpFormatter)
     group = parser.add_argument_group("launcher")
     group.add_argument("--launcher.nodes", type=int, default=1)
-    group.add_argument("--launcher.gpus", type=int, default=1)
-    group.add_argument("--launcher.cpus", type=int, default=16)
-    group.add_argument("--launcher.ram", type=int, default=32)
-    group.add_argument("--launcher.timeout", type=int, default=60)
+    group.add_argument("--launcher.gpus", type=int, default=1, help="(per node)")
+    group.add_argument("--launcher.cpus", type=int, default=16, help="(per GPU)")
+    group.add_argument("--launcher.ram", type=int, default=32, help="(GiB per GPU)")
+    group.add_argument("--launcher.timeout", type=int, default=60, help="(minutes)")
     group.add_argument("--launcher.partition", type=str, default="hopper")
     group.add_argument(
         "--launcher.cluster",
