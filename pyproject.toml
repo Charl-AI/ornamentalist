@@ -16,7 +16,12 @@ module-root = ""
 
 [dependency-groups]
 dev = [
+    "numpy>=2.3.1",
     "pytest>=8.4.1",
     "setuptools>=80.9.0",
     "submitit>=1.5.3",
+    "timm>=1.0.17",
+    "torch>=2.7.1",
+    "torchvision>=0.22.1",
+    "tqdm>=4.67.1",
 ]
