@@ -7,7 +7,7 @@ import time
 
 import submitit
 import torch
-from submitit.helpers import RsyncSnapshot, clean_env
+from submitit.helpers import RsyncSnapshot
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 import ornamentalist
@@ -24,14 +24,16 @@ def main(config):
     # call ornamentalist.setup() here since submitit may launch this
     # in a different process to where you called launch()
     ornamentalist.setup(config, force=True)
-
     D = Distributed()  # setup distributed environment
 
-    # update output_dir (to prevent overwriting outputs in array jobs/sweeps)
-    job_env = submitit.JobEnvironment()
-    print(f"Running job ID {job_env.job_id}")
-    output_dir = config["launcher"]["output_dir"]
-    output_dir = os.path.join(output_dir, f"{job_env.job_id}")
+    # current working directory is in output_dir/snapshot due to RsyncSnapshot
+    # let's instead use output_dir/<job_id>
+    cwd = pathlib.Path.cwd()
+    job_id = submitit.JobEnvironment().job_id
+    cwd = cwd.parent / job_id
+
+    print(f"Running job ID {job_id}")
+    print(f"Using {cwd} as working and output directory")
 
     model_cls = get_model_cls()
     net = model_cls(input_size=28, in_channels=1, num_classes=10, learn_sigma=False)
@@ -45,7 +47,7 @@ def main(config):
         state=state,
         train_loader=train_loader,
         val_loader=val_loader,
-        output_dir=output_dir,
+        output_dir=str(cwd),
         D=D,
     )
     del D  # cleanup distributed environment (just to be safe)
@@ -59,19 +61,15 @@ def launch():
     group.add_argument("--launcher.nodes", type=int, default=1)
     group.add_argument("--launcher.gpus", type=int, default=1, help="(per node)")
     group.add_argument("--launcher.cpus", type=int, default=16, help="(per GPU)")
-    group.add_argument("--launcher.ram", type=int, default=32, help="(GiB per GPU)")
-    group.add_argument("--launcher.timeout", type=int, default=60, help="(minutes)")
+    group.add_argument("--launcher.ram", type=int, default=64, help="(GiB per GPU)")
+    group.add_argument("--launcher.timeout", type=int, default=20, help="(minutes)")
     group.add_argument("--launcher.partition", type=str, default="hopper")
+    group.add_argument("--launcher.output_dir", type=str, default="./outputs/")
     group.add_argument(
         "--launcher.cluster",
         type=str,
         choices=["debug", "local", "slurm"],
         default="debug",
-    )
-    group.add_argument(
-        "--launcher.output_dir",
-        type=str,
-        default="/mnt/ps/home/CORP/charlie.jones/project/ornamentalist/outputs",
     )
     group.add_argument(
         "--launcher.qos",
@@ -80,36 +78,32 @@ def launch():
         choices=["normal", "high"],
     )
 
-    # auto-generate the rest of the CLI
+    # auto-generate and parse the rest of the CLI
     configs = ornamentalist.cli(parser)
+    launcher_cfg = configs[0]["launcher"]
 
     # create run-specific output directory
-    output_dir = os.path.join(
-        configs[0]["launcher"]["output_dir"], f"{time.time():.0f}"
-    )
-    configs[0]["launcher"]["output_dir"] = output_dir
-    cluster = configs[0]["launcher"]["cluster"]
+    output_dir = os.path.join(launcher_cfg["output_dir"], f"{time.time():.0f}")
+    cluster = launcher_cfg["cluster"]
 
     executor = submitit.AutoExecutor(folder=output_dir, cluster=cluster)
     executor.update_parameters(
-        # name=configs[0]["launcher"],
-        slurm_partition=configs[0]["launcher"]["partition"],
-        slurm_qos=configs[0]["launcher"]["qos"],
-        nodes=configs[0]["launcher"]["nodes"],
-        tasks_per_node=configs[0]["launcher"]["gpus"],  # set ntasks = ngpus
-        gpus_per_node=configs[0]["launcher"]["gpus"],
-        cpus_per_task=configs[0]["launcher"]["cpus"],
-        slurm_mem_per_gpu=configs[0]["launcher"]["ram"],
-        timeout_min=configs[0]["launcher"]["timeout"],
+        slurm_partition=launcher_cfg["partition"],
+        slurm_qos=launcher_cfg["qos"],
+        nodes=launcher_cfg["nodes"],
+        tasks_per_node=launcher_cfg["gpus"],  # set ntasks = ngpus
+        gpus_per_node=launcher_cfg["gpus"],
+        cpus_per_task=launcher_cfg["cpus"],
+        slurm_mem_per_gpu=f"{launcher_cfg['ram']}G",
+        timeout_min=launcher_cfg["timeout"],
         stderr_to_stdout=True,
-        # send kill signal 2 minutes before timeout to give time to save checkpoint
         slurm_signal_delay_s=120,
     )
 
     # it's good practice to use RsyncSnapshot to ensure that changes to your
     # code don't affect jobs in the queue
     snapshot_dir = os.path.join(output_dir, "snapshot")
-    with RsyncSnapshot(pathlib.Path(snapshot_dir)), clean_env():
+    with RsyncSnapshot(pathlib.Path(snapshot_dir)):
         fns = [functools.partial(main, config=config) for config in configs]
         jobs = executor.submit_array(fns)
         log.info(f"Submitted {jobs=}")

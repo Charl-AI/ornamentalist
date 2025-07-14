@@ -69,6 +69,8 @@ def generate(
     return x1
 
 
+# admittedly, three decorators is quite funny... but it works!
+@torch.compile
 @torch.autocast(device_type="cuda", dtype=torch.bfloat16)
 @ornamentalist.configure()
 def compute_loss(

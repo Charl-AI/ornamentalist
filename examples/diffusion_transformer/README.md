@@ -18,61 +18,68 @@ launcher:
   --launcher.nodes int
   --launcher.gpus int   (per node)
   --launcher.cpus int   (per GPU)
-  --launcher.ram int    (per GPU)
-  --launcher.timeout int
-                        (mins)
+  --launcher.ram int    (GiB per GPU)
+  --launcher.timeout int (minutes)
   --launcher.partition str
   --launcher.output_dir str
-  --launcher.qos {normal,high}
   --launcher.cluster {debug,local,slurm}
-
-guided_prediction:
-  Hyperparameters for trainer.guided_prediction
-
-  --guided_prediction.cfg_omega  ...]
-                        Type: float (optional), default=1.0
-  --guided_prediction.cfg_alpha  ...]
-                        Type: float (optional), default=0.0
-
-generate:
-  Hyperparameters for trainer.generate
-
-  --generate.n_steps  ...]
-                        Type: int (optional), default=100
-
-compute_loss:
-  Hyperparameters for trainer.compute_loss
-
-  --compute_loss.sigma  ...]
-                        Type: float (optional), default=0.0
-
-train:
-  Hyperparameters for trainer.train
-
-  --train.num_steps  ...]
-                        Type: int (optional), default=10000
-  --train.log_every_n_steps  ...]
-                        Type: int (optional), default=100
-  --train.eval_every_n_steps  ...]
-                        Type: int (optional), default=1000
+  --launcher.qos {normal,high}
 
 get_model_cls:
-  Hyperparameters for dit.get_model_cls
+  Hyperparameters for examples.diffusion_transformer.dit.get_model_cls
 
   --get_model_cls.name  ...]
-                        Type: str, choices: ('DiT-XL/2', 'DiT-XL/4', 'DiT-XL/8', 'DiT-L/2', 'DiT-L/4', 'DiT-L/8', 'DiT-B/2', 'DiT-B/4', 'DiT-B/8', 'DiT-S/2', 'DiT-S/4', 'DiT-S/8') (optional),
+                        Type: str, choices: ('DiT-XL/2', 'DiT-XL/4', 'DiT-XL/8', 
+                                             'DiT-L/2', 'DiT-L/4', 'DiT-L/8',
+                                             'DiT-B/2', 'DiT-B/4', 'DiT-B/8',
+                                             'DiT-S/3', 'DiT-S/4', 'DiT-S/8') (optional),
                         default=DiT-S/2
 
 get_dataloaders:
-  Hyperparameters for mnist.get_dataloaders
+  Hyperparameters for examples.diffusion_transformer.mnist.get_dataloaders
 
-  --get_dataloaders.data_dir  ...]
-                        Type: str (optional), default=./data
-  --get_dataloaders.batch_size  ...]
-                        Type: int (optional), default=256
-  --get_dataloaders.num_workers  ...]
-                        Type: int (optional), default=8
-  --get_dataloaders.pin_memory  ...]
-                        Type: bool (optional), default=True
+  --get_dataloaders.data_dir  ...]    Type: str (optional), default=./data
+  --get_dataloaders.batch_size  ...]  Type: int (optional), default=256
+  --get_dataloaders.num_workers  ...] Type: int (optional), default=8
+  --get_dataloaders.pin_memory  ...]  Type: bool (optional), default=True
 
+guided_prediction:
+  Hyperparameters for examples.diffusion_transformer.trainer.guided_prediction
+
+  --guided_prediction.cfg_omega  ...] Type: float (optional), default=1.0
+  --guided_prediction.cfg_alpha  ...] Type: float (optional), default=0.0
+
+generate:
+  Hyperparameters for examples.diffusion_transformer.trainer.generate
+
+  --generate.n_steps  ...] Type: int (optional), default=100
+
+compute_loss:
+  Hyperparameters for examples.diffusion_transformer.trainer.compute_loss
+
+  --compute_loss.sigma  ...] Type: float (optional), default=0.0
+
+train:
+  Hyperparameters for examples.diffusion_transformer.trainer.train
+
+  --train.num_steps  ...]          Type: int (optional), default=10000
+  --train.log_every_n_steps  ...]  Type: int (optional), default=100
+  --train.eval_every_n_steps  ...] Type: int (optional), default=1000
+```
+
+## Example usage:
+
+Run a single-GPU job in the current process with the default parameters:
+```bash
+python examples/diffusion_transformer/main.py
+```
+
+Run a 2-GPU DDP job on SLURM:
+```bash
+python examples/diffusion_transformer/main.py --launcher.cluster slurm --launcher.gpus 2
+```
+
+Run a sweep over 4 config combinations as a SLURM array job:
+```bash
+python examples/diffusion_transformer/main.py --launcher.cluster slurm --compute_loss.sigma 0.0 0.1 --guided_prediction.cfg_omega 1.0 1.5
 ```

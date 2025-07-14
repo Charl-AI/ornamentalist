@@ -8,7 +8,7 @@ import ornamentalist
 @ornamentalist.configure()
 def get_dataloaders(
     *,
-    data_dir: str = ornamentalist.Configurable["./data"],
+    data_dir: str = ornamentalist.Configurable["/tmp/data"],
     batch_size: int = ornamentalist.Configurable[256],
     num_workers: int = ornamentalist.Configurable[8],
     pin_memory: bool = ornamentalist.Configurable[True],

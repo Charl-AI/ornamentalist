@@ -80,3 +80,12 @@ if __name__ == "__main__":
     # through `ornamentalist.get_config()`
     assert ornamentalist.get_config() == config
 ```
+
+## Examples
+
+Ornamentalist is a simple library! You can learn the whole thing by reading through these examples:
+
+- `examples/basics.py` teaches you the basic usage of ornamentalist (as seen above).
+- `examples/submitit_basic.py` shows you a simple pattern for launching ornamentalist jobs with submitit.
+- `examples/cli.py` demonstrates how to use the automatic CLI generation feature (with example outputs).
+- `examples/diffusion_transformer` is an example of a full research codebase using ornamentalist.
