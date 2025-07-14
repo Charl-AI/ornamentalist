@@ -26,14 +26,15 @@ def main(config):
     ornamentalist.setup(config, force=True)
     D = Distributed()  # setup distributed environment
 
-    # current working directory is in output_dir/snapshot due to RsyncSnapshot
-    # let's instead use output_dir/<job_id>
+    # current working directory is in output_dir/<launch time>/snapshot due to RsyncSnapshot
+    # let's instead use output_dir/<launch time>/<job_id>
+    # (it's useful to append the job_id because sweeps are all launched at the same time)
     cwd = pathlib.Path.cwd()
     job_id = submitit.JobEnvironment().job_id
     cwd = cwd.parent / job_id
 
     print(f"Running job ID {job_id}")
-    print(f"Using {cwd} as working and output directory")
+    print(f"Using {cwd} as output directory")
 
     model_cls = get_model_cls()
     net = model_cls(input_size=28, in_channels=1, num_classes=10, learn_sigma=False)
