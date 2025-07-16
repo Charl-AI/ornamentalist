@@ -38,7 +38,7 @@ get_model_cls:
 get_dataloaders:
   Hyperparameters for examples.diffusion_transformer.mnist.get_dataloaders
 
-  --get_dataloaders.data_dir  ...]    Type: str (optional), default=./data
+  --get_dataloaders.data_dir  ...]    Type: str (optional), default=/tmp/data
   --get_dataloaders.batch_size  ...]  Type: int (optional), default=256
   --get_dataloaders.num_workers  ...] Type: int (optional), default=8
   --get_dataloaders.pin_memory  ...]  Type: bool (optional), default=True
@@ -65,6 +65,19 @@ train:
   --train.num_steps  ...]          Type: int (optional), default=10000
   --train.log_every_n_steps  ...]  Type: int (optional), default=100
   --train.eval_every_n_steps  ...] Type: int (optional), default=1000
+
+launcher:
+  Hyperparameters for __main__.launcher
+
+  --launcher.nodes  ...]      Type: int (optional), default=1
+  --launcher.gpus  ...]       Type: int (optional), default=1
+  --launcher.cpus  ...]       Type: int (optional), default=16
+  --launcher.ram  ...]        Type: int (optional), default=64
+  --launcher.timeout  ...]    Type: int (optional), default=20
+  --launcher.partition  ...]  Type: str (optional), default=hopper
+  --launcher.qos  ...]        Type: str (optional), default=normal
+  --launcher.output_dir  ...] Type: str (optional), default=./outputs/
+  --launcher.cluster  ...]    Type: str, choices: ('debug', 'local', 'slurm') (optional), default=debug
 ```
 
 ## Example usage:
