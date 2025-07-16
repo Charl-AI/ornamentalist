@@ -1,9 +1,9 @@
-import argparse
 import functools
 import logging
 import os
 import pathlib
 import time
+from typing import Literal
 
 import submitit
 import torch
@@ -21,81 +21,58 @@ log = logging.getLogger(__name__)
 
 
 def main(config):
-    # call ornamentalist.setup() here since submitit may launch this
-    # in a different process to where you called launch()
     ornamentalist.setup(config, force=True)
-    D = Distributed()  # setup distributed environment
+    with Distributed() as D:
+        job_id = submitit.JobEnvironment().job_id
+        output_dir = pathlib.Path.cwd().parent / job_id
+        log.info(f"Running job ID {job_id}")
+        log.info(f"Using {output_dir} as output directory")
 
-    # current working directory is in output_dir/snapshot due to RsyncSnapshot
-    # let's instead use output_dir/<job_id>
-    cwd = pathlib.Path.cwd()
-    job_id = submitit.JobEnvironment().job_id
-    cwd = cwd.parent / job_id
+        model_cls = get_model_cls()
+        net = model_cls(input_size=28, in_channels=1, num_classes=10, learn_sigma=False)
+        net.to(D.device)
+        ddp = DDP(net)
+        opt = torch.optim.Adam(net.parameters(), lr=1e-4)
+        state = TrainState(ddp=ddp, opt=opt, global_step=0)
 
-    print(f"Running job ID {job_id}")
-    print(f"Using {cwd} as working and output directory")
-
-    model_cls = get_model_cls()
-    net = model_cls(input_size=28, in_channels=1, num_classes=10, learn_sigma=False)
-    net.to(D.device)
-    ddp = DDP(net)
-    opt = torch.optim.Adam(net.parameters(), lr=1e-4)
-    state = TrainState(ddp=ddp, opt=opt, global_step=0)
-
-    train_loader, val_loader = get_dataloaders()
-    train(
-        state=state,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        output_dir=str(cwd),
-        D=D,
-    )
-    del D  # cleanup distributed environment (just to be safe)
+        train_loader, val_loader = get_dataloaders()
+        train(
+            state=state,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            output_dir=str(output_dir),
+            D=D,
+        )
 
 
-def launch():
+@ornamentalist.configure()
+def launcher(
+    configs: list[ornamentalist.ConfigDict],
+    nodes: int = ornamentalist.Configurable[1],
+    gpus: int = ornamentalist.Configurable[1],
+    cpus: int = ornamentalist.Configurable[16],
+    ram: int = ornamentalist.Configurable[64],
+    timeout: int = ornamentalist.Configurable[20],
+    partition: str = ornamentalist.Configurable["hopper"],
+    qos: str = ornamentalist.Configurable["normal"],
+    output_dir: str = ornamentalist.Configurable["./outputs/"],
+    cluster: Literal["debug", "local", "slurm"] = ornamentalist.Configurable["debug"],
+):
     """Thin wrapper that launches the main function with submitit."""
 
-    parser = argparse.ArgumentParser(formatter_class=argparse.MetavarTypeHelpFormatter)
-    group = parser.add_argument_group("launcher")
-    group.add_argument("--launcher.nodes", type=int, default=1)
-    group.add_argument("--launcher.gpus", type=int, default=1, help="(per node)")
-    group.add_argument("--launcher.cpus", type=int, default=16, help="(per GPU)")
-    group.add_argument("--launcher.ram", type=int, default=64, help="(GiB per GPU)")
-    group.add_argument("--launcher.timeout", type=int, default=20, help="(minutes)")
-    group.add_argument("--launcher.partition", type=str, default="hopper")
-    group.add_argument("--launcher.output_dir", type=str, default="./outputs/")
-    group.add_argument(
-        "--launcher.cluster",
-        type=str,
-        choices=["debug", "local", "slurm"],
-        default="debug",
-    )
-    group.add_argument(
-        "--launcher.qos",
-        type=str,
-        default="normal",
-        choices=["normal", "high"],
-    )
-
-    # auto-generate and parse the rest of the CLI
-    configs = ornamentalist.cli(parser)
-    launcher_cfg = configs[0]["launcher"]
-
     # create run-specific output directory
-    output_dir = os.path.join(launcher_cfg["output_dir"], f"{time.time():.0f}")
-    cluster = launcher_cfg["cluster"]
+    output_dir = os.path.join(output_dir, f"{time.time():.0f}")
 
     executor = submitit.AutoExecutor(folder=output_dir, cluster=cluster)
     executor.update_parameters(
-        slurm_partition=launcher_cfg["partition"],
-        slurm_qos=launcher_cfg["qos"],
-        nodes=launcher_cfg["nodes"],
-        tasks_per_node=launcher_cfg["gpus"],  # set ntasks = ngpus
-        gpus_per_node=launcher_cfg["gpus"],
-        cpus_per_task=launcher_cfg["cpus"],
-        slurm_mem_per_gpu=f"{launcher_cfg['ram']}G",
-        timeout_min=launcher_cfg["timeout"],
+        slurm_partition=partition,
+        slurm_qos=qos,
+        nodes=nodes,
+        tasks_per_node=gpus,  # set ntasks = ngpus
+        gpus_per_node=gpus,
+        cpus_per_task=cpus,
+        slurm_mem_per_gpu=f"{ram}G",
+        timeout_min=timeout,
         stderr_to_stdout=True,
         slurm_signal_delay_s=120,
     )
@@ -124,4 +101,8 @@ def launch():
 
 
 if __name__ == "__main__":
-    launch()
+    configs = ornamentalist.cli()
+    # if launching a sweep, all configs must have same launcher settings
+    assert all(config["launcher"] == configs[0]["launcher"] for config in configs)
+    ornamentalist.setup(configs[0], force=True)
+    launcher(configs=configs)
