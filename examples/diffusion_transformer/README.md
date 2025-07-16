@@ -14,17 +14,6 @@ From the root of this repo, you can run the code simply by running `python examp
 options:
   -h, --help            show this help message and exit
 
-launcher:
-  --launcher.nodes int
-  --launcher.gpus int   (per node)
-  --launcher.cpus int   (per GPU)
-  --launcher.ram int    (GiB per GPU)
-  --launcher.timeout int (minutes)
-  --launcher.partition str
-  --launcher.output_dir str
-  --launcher.cluster {debug,local,slurm}
-  --launcher.qos {normal,high}
-
 get_model_cls:
   Hyperparameters for examples.diffusion_transformer.dit.get_model_cls
 
