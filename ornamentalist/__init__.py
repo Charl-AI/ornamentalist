@@ -9,6 +9,7 @@ import inspect
 import itertools
 import logging
 from typing import Any, Callable, Literal, TypeAlias, get_args
+import typing
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ornamentalist")
@@ -18,7 +19,7 @@ __all__ = ["setup", "cli", "get_config", "configure", "Configurable"]
 
 # --- types ---
 
-ConfigDict: TypeAlias = dict[str, dict[str, Any]]
+ConfigDict: typing.TypeAlias = dict[str, dict[str, typing.Any]]
 """A nested dict mapping function names to dicts containing
 their parameters and values. Input format for ornamentalist.setup().
 Example: config = {"my_func": {"param_1": value_1, "param_2": value_2}}
@@ -27,13 +28,13 @@ Example: config = {"my_func": {"param_1": value_1, "param_2": value_2}}
 
 @dataclasses.dataclass(frozen=True)
 class _Configurable:
-    default: Any = None
+    default: typing.Any = None
 
     def __getitem__(self, default):
         return _Configurable(default)
 
 
-Configurable: Any = _Configurable()
+Configurable: typing.Any = _Configurable()
 """Mark arguments as Configurable to tell the configure decorator
 about which parameters need to be replaced. Use it as a default
 argument for any parameter you wish to be configured by ornamentalist.
@@ -44,11 +45,11 @@ use subscript notation, e.g. `param: int = Configurable[123]`."""
 @dataclasses.dataclass
 class _ConfigurableFn:
     name: str  # either original_func.__name__ or the custom name given by the decorator
-    original_func: Callable
+    original_func: typing.Callable
     params_to_inject: list[str]
     signature: inspect.Signature
-    cached_partial: Callable | None = None
-    cli_defaults: dict[str, Any] | None = None
+    cached_partial: typing.Callable | None = None
+    cli_defaults: dict[str, typing.Any] | None = None
     verbose: bool = False
 
     def __call__(self, *args, **kwargs):
@@ -299,8 +300,11 @@ def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
             kwargs["metavar"] = "\b"
 
             is_literal = hasattr(anno, "__origin__") and anno.__origin__ is Literal
+            is_literal = (
+                hasattr(anno, "__origin__") and anno.__origin__ is typing.Literal
+            )
             if is_literal:
-                literal_args = get_args(anno)
+                literal_args = typing.get_args(anno)
                 if not literal_args:
                     log.warning(
                         f"Parameter '{param_name}' in {f.name} has an empty Literal "
@@ -341,7 +345,7 @@ def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
                         f"Tried to create a parser for {fn_name}, but "
                         + f"parameter '{param_name}' has type annotation '{anno}'.\n"
                         + "Automatic parser generation only works with types: "
-                        f"{ALLOWED_TYPES + [Literal]}.\n"
+                        f"{ALLOWED_TYPES + [typing.Literal]}.\n"
                         + "(If you provide no annotation, argparse will treat it as 'str')"
                     )
                     raise ValueError(msg)
