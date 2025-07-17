@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ornamentalist")
 
 
-__all__ = ["setup", "cli", "get_config", "configure", "Configurable"]
+__all__ = ["setup", "cli", "get_config", "configure", "Configurable", "ConfigDict"]
 
 # --- types ---
 
