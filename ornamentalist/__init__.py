@@ -8,7 +8,7 @@ import functools
 import inspect
 import itertools
 import logging
-from typing import Any, Callable, Literal, TypeAlias, get_args
+import types
 import typing
 
 logging.basicConfig(level=logging.INFO)
@@ -26,9 +26,12 @@ Example: config = {"my_func": {"param_1": value_1, "param_2": value_2}}
 """
 
 
+class _NotGiven: ...
+
+
 @dataclasses.dataclass(frozen=True)
 class _Configurable:
-    default: typing.Any = None
+    default: typing.Any = _NotGiven
 
     def __getitem__(self, default):
         return _Configurable(default)
@@ -38,8 +41,10 @@ Configurable: typing.Any = _Configurable()
 """Mark arguments as Configurable to tell the configure decorator
 about which parameters need to be replaced. Use it as a default
 argument for any parameter you wish to be configured by ornamentalist.
+
 To provide a default value for use with ornamentalist.cli(),
-use subscript notation, e.g. `param: int = Configurable[123]`."""
+use subscript notation, e.g. `param: int = Configurable[123]`.
+Default values will have no effect if not using ornamentalist.cli()."""
 
 
 @dataclasses.dataclass
@@ -102,9 +107,6 @@ _CONFIGURABLE_FUNCTIONS: list[_ConfigurableFn] = []
 def setup(config: ConfigDict, force: bool = False) -> None:
     """Setup configuration for use in decorated functions.
     Must be called before invoking any decorated functions.
-
-    The config dict should take the form of a nested dict,
-    mapping function names to dicts containing each function's
 
     Raises a ValueError if you try to call setup a second time.
     If this is what you want (i.e. you want to reconfigure
@@ -179,7 +181,7 @@ def configure(name: str | None = None, verbose: bool = False):
         for p in signature.parameters.values():
             if isinstance(p.default, _Configurable):
                 params_to_inject.append(p.name)
-                if p.default.default is not None:
+                if p.default.default is not _NotGiven:
                     cli_defaults[p.name] = p.default.default
 
         if not params_to_inject:
@@ -226,6 +228,18 @@ def _str2bool(v):
         raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
+# enables parsing types such as int | None:
+# '2' -> int('2') == 2
+# 'null' -> None
+def _cast_or_none(v, t):
+    if str(v).lower() in ("none", "null"):
+        return None
+    try:
+        return t(v)
+    except Exception:
+        raise argparse.ArgumentTypeError(f"invalid {t} value: '{v}'")
+
+
 def _namespace2dict(config_ns: argparse.Namespace) -> ConfigDict:
     config_dict = {}
     for flat_key, value in vars(config_ns).items():
@@ -248,11 +262,9 @@ def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
 
     Note that automatic CLI generation only works if Configurable parameters
     are annotated with one of the following built-in types:
-        - int
-        - float
-        - bool
-        - str
-        - Literal[str|int|float]
+        - int, float, bool, str
+        - a Union of any of the above with None (e.g. int | None)
+        - a Literal containing concrete values of either str, int, or float.
     If you do not use type annotations in your function signatures, argparse
     will default to treating them as strings. You will then have to manually
     deal with casting them to whatever type you wish to use.
@@ -299,21 +311,32 @@ def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
             kwargs = {}
             kwargs["metavar"] = "\b"
 
-            is_literal = hasattr(anno, "__origin__") and anno.__origin__ is Literal
-            is_literal = (
-                hasattr(anno, "__origin__") and anno.__origin__ is typing.Literal
-            )
-            if is_literal:
-                literal_args = typing.get_args(anno)
-                if not literal_args:
+            origin, args = typing.get_origin(anno), typing.get_args(anno)
+            if origin is types.UnionType:
+                arg_type = [t for t in args if t is not None][0]
+                if (
+                    len(args) != 2
+                    or types.NoneType not in args
+                    or arg_type not in [str, int, float]
+                ):
+                    raise ValueError(
+                        "Union types are only supported between int/str/float "
+                        f"and None, got {args}."
+                    )
+
+                kwargs["type"] = functools.partial(_cast_or_none, t=arg_type)
+                kwargs["help"] = f"Type: {arg_type.__qualname__} | None"
+
+            elif origin is typing.Literal:
+                if not args:
                     log.warning(
                         f"Parameter '{param_name}' in {f.name} has an empty Literal "
                         "annotation. Skipping."
                     )
                     continue
 
-                arg_type = type(literal_args[0])
-                if not all(isinstance(arg, arg_type) for arg in literal_args):
+                arg_type = type(args[0])
+                if not all(isinstance(arg, arg_type) for arg in args):
                     raise ValueError(
                         f"All choices in Literal for '{param_name}' in {f.name} "
                         "must be of the same type."
@@ -324,12 +347,9 @@ def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
                         f"Literal type for '{param_name}' in {f.name} must contain "
                         f"str, int, or float, but got {arg_type}."
                     )
-
                 kwargs["type"] = arg_type
-                kwargs["choices"] = literal_args
-                kwargs["help"] = (
-                    f"Type: {arg_type.__qualname__}, choices: {literal_args}"
-                )
+                kwargs["choices"] = args
+                kwargs["help"] = f"Type: {arg_type.__qualname__}, choices: {args}"
 
             else:
                 if anno is inspect.Parameter.empty:
