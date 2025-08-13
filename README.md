@@ -6,7 +6,7 @@ Ornamentalist is a tiny library for configuring functions with fixed hyperparame
 
 The core thing ornamentalist does is it allows you to specify the parameters of a function as `Configurable`. You can then use the `ornamentalist.configure()` decorator to replace the function with a `partial` version of itself. The new partial function has all configurable parameters fixed to values supplied by you at the start of the program. This pattern allows you to avoid the work of plumbing hyperparameters around your code, without resorting to global variables or config God-objects.
 
-You can use ornamentalist alongside your favourite configuration libraries like argparse or hydra. We also provide the optional `ornamentalist.cli()` feature, which automatically generates a CLI for your program.
+You can use ornamentalist alongside your favourite configuration libraries like argparse or hydra. Ornamentalist also comes with the optional `ornamentalist.cli()` feature, which automatically generates a CLI for your program.
 
 I encourage you to read the short [blog post](https://charl-ai.github.io/blog/args) to better understand the motivation behind this libary and why I think ornamentalist is a good solution. For worked examples of how to use ornamentalist with other tools such as hydra, argparse, or submitit, check out the `examples/` directory.
 
