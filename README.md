@@ -1,6 +1,8 @@
 # Ornamentalist
 
-Ornamentalist is a tiny library for configuring functions with fixed hyperparameters in Python. The goal is to allow research code to be more flexible and hackable, without losing readability.
+Ornamentalist is a tiny library for configuring functions with fixed hyperparameters in Python. The goal is to allow research code to be more flexible and hackable, without losing readability. It is best summarised by the following sentence:
+
+> What if, instead of threading hyperparameters throughout our programs, we simply replace all configurable functions with `partial` versions of themselves where their hyperparamers are fixed to values given at the start of the program?
 
 The core thing ornamentalist does is it allows you to specify the parameters of a function as `Configurable`. You can then use the `ornamentalist.configure()` decorator to replace the function with a `partial` version of itself. The new partial function has all configurable parameters fixed to values supplied by you at the start of the program. This pattern allows you to avoid the work of plumbing hyperparameters around your code, without resorting to global variables or config God-objects.
 
