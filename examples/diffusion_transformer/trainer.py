@@ -58,7 +58,7 @@ def generate(
     """Generate a sample with the Euler probability flow ODE solver."""
     t = torch.linspace(0, 1, n_steps).to(x0.device)
     dt = 1 / n_steps
-    x1 = x0
+    x1 = x0.detach().clone()
     for i in tqdm(
         range(n_steps),
         desc="Generating batch of samples",
