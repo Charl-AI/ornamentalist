@@ -4,6 +4,7 @@
 
 import argparse
 import dataclasses
+import enum
 import functools
 import inspect
 import itertools
@@ -15,7 +16,15 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ornamentalist")
 
 
-__all__ = ["setup", "cli", "get_config", "configure", "Configurable", "ConfigDict"]
+__all__ = [
+    "disable",
+    "setup",
+    "cli",
+    "get_config",
+    "configure",
+    "Configurable",
+    "ConfigDict",
+]
 
 # --- types ---
 
@@ -58,6 +67,17 @@ class _ConfigurableFn:
     verbose: bool = False
 
     def __call__(self, *args, **kwargs):
+        if _OPERATING_MODE is OperatingMode.DISABLED:
+            return self.original_func(*args, **kwargs)
+        elif _OPERATING_MODE is OperatingMode.DEFAULT:
+            log.warning(
+                f"Function {self.original_func.__name__} is decorated with ornamentalist.configure(), "
+                "but ornamentalist.setup() has not yet been called to setup the configuration. "
+                "Disabling ornamentalist and defaulting to pass-through behaviour. "
+                "If this is desired, you can disable this warning by calling ornamentalist.disable()."
+            )
+            return self.original_func(*args, **kwargs)
+
         if self.cached_partial is None:
             fn_name = (
                 f"{self.original_func.__module__}.{self.original_func.__qualname__}"
@@ -96,12 +116,25 @@ class _Cfg:
 # --- global state ---
 
 
+class OperatingMode(enum.Enum):
+    DEFAULT = 0
+    DISABLED = 1
+    ENABLED = 2
+
+
+_OPERATING_MODE = OperatingMode.DEFAULT
 _GLOBAL_CONFIG: _Cfg | None = None
 _CONFIG_IS_SET = False
 _CONFIGURABLE_FUNCTIONS: list[_ConfigurableFn] = []
 
 
 # --- core ---
+
+
+def disable():
+    """Disable all ornamentalist decorators."""
+    global _OPERATING_MODE
+    _OPERATING_MODE = OperatingMode.DISABLED
 
 
 def setup(config: ConfigDict, force: bool = False) -> None:
@@ -119,7 +152,8 @@ def setup(config: ConfigDict, force: bool = False) -> None:
     setup(config)
     ```
     """
-    global _GLOBAL_CONFIG, _CONFIG_IS_SET
+    global _GLOBAL_CONFIG, _CONFIG_IS_SET, _OPERATING_MODE
+    _OPERATING_MODE = OperatingMode.ENABLED
     if _CONFIG_IS_SET and not force:
         raise ValueError(
             "Configuration has already been set. Use force=True to override."
