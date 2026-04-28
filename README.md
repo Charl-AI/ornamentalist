@@ -83,6 +83,23 @@ if __name__ == "__main__":
     assert ornamentalist.get_config() == config
 ```
 
+## Standalone Parameters
+
+Sometimes you want to configure a value that doesn't naturally belong to a function — for example, a random seed. Instead of wrapping it in a dummy function, use `ornamentalist.param()`:
+
+```python
+import ornamentalist
+
+seed = ornamentalist.param("experiment.seed", int, default=42)
+
+config = {"experiment": {"seed": 123}}
+ornamentalist.setup(config)
+
+torch.manual_seed(seed())  # returns 123
+```
+
+The dotted key (`"experiment.seed"`) maps to `config["experiment"]["seed"]` and shows up as `--experiment.seed` in the CLI. Supported types are `int`, `float`, `bool`, and `str`.
+
 ## Examples
 
 Ornamentalist is a simple library! You can learn the whole thing by reading through these examples:

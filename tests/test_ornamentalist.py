@@ -4,16 +4,20 @@ from typing import Literal
 import pytest
 
 import ornamentalist
-from ornamentalist import Configurable, cli, configure, get_config, setup
+from ornamentalist import Configurable, cli, configure, get_config, param, setup
 
 
 @pytest.fixture(autouse=True)
 def reset_ornamentalist_state():
+    fns_before = list(ornamentalist._CONFIGURABLE_FUNCTIONS)
+    params_before = list(ornamentalist._CONFIGURABLE_PARAMS)
     yield
     ornamentalist._GLOBAL_CONFIG = None
     ornamentalist._CONFIG_IS_SET = False
     for f in ornamentalist._CONFIGURABLE_FUNCTIONS:
         f.reset()
+    ornamentalist._CONFIGURABLE_FUNCTIONS[:] = fns_before
+    ornamentalist._CONFIGURABLE_PARAMS[:] = params_before
 
 
 @configure()
@@ -275,3 +279,117 @@ def test_cli_unsupported_type_raises_error():
         ValueError, match="Automatic parser generation only works with types"
     ):
         cli()
+
+
+# --- Param Tests ---
+
+
+def test_param_basic():
+    """Tests that a standalone param resolves its value from the config."""
+    seed = param("experiment.seed", int)
+    setup({"experiment": {"seed": 42}})
+    assert seed() == 42
+
+
+def test_param_with_default():
+    """Tests that a param with a default can be used, and that the config value takes precedence."""
+    seed = param("experiment.seed", int, default=0)
+    setup({"experiment": {"seed": 99}})
+    assert seed() == 99
+
+
+def test_param_missing_config_raises_error():
+    """Tests that accessing a param whose group is not in the config raises a KeyError."""
+    seed = param("experiment.seed", int)
+    setup({"other": {"key": 1}})
+    with pytest.raises(KeyError):
+        seed()
+
+
+def test_param_disabled_mode_with_default(monkeypatch):
+    """Tests that a param returns its default when ornamentalist is disabled."""
+    seed = param("experiment.seed", int, default=42)
+    monkeypatch.setattr(ornamentalist, "_OPERATING_MODE", ornamentalist.OperatingMode.DISABLED)
+    assert seed() == 42
+
+
+def test_param_disabled_mode_no_default(monkeypatch):
+    """Tests that a param without default raises when ornamentalist is disabled."""
+    seed = param("experiment.seed", int)
+    monkeypatch.setattr(ornamentalist, "_OPERATING_MODE", ornamentalist.OperatingMode.DISABLED)
+    with pytest.raises(ValueError, match="disabled"):
+        seed()
+
+
+def test_param_default_mode_with_default(monkeypatch):
+    """Tests that a param returns its default (with warning) when setup has not been called."""
+    monkeypatch.setattr(ornamentalist, "_OPERATING_MODE", ornamentalist.OperatingMode.DEFAULT)
+    seed = param("experiment.seed", int, default=7)
+    assert seed() == 7
+
+
+def test_param_default_mode_no_default(monkeypatch):
+    """Tests that a param without default raises when setup has not been called."""
+    monkeypatch.setattr(ornamentalist, "_OPERATING_MODE", ornamentalist.OperatingMode.DEFAULT)
+    seed = param("experiment.seed", int)
+    with pytest.raises(ValueError, match="not been called"):
+        seed()
+
+
+def test_param_unsupported_type():
+    """Tests that param() rejects unsupported types."""
+    with pytest.raises(ValueError, match="param\\(\\) only supports types"):
+        param("experiment.data", list)
+
+
+def test_param_cli(monkeypatch):
+    """Tests that standalone params show up in the CLI."""
+    seed = param("experiment.seed", int)
+    # fmt: off
+    monkeypatch.setattr(
+        sys, "argv", [
+            "script.py",
+            "--basic_func.a", "100",
+            "--my_class.val", "1.0",
+            "--literal_func.dataset", "cifar",
+            "--experiment.seed", "42",
+        ],)
+    # fmt: on
+    configs = cli()
+    assert len(configs) == 1
+    assert configs[0]["experiment"]["seed"] == 42
+
+
+def test_param_cli_with_default(monkeypatch):
+    """Tests that a param with a default is optional in the CLI."""
+    seed = param("experiment.seed", int, default=7)
+    # fmt: off
+    monkeypatch.setattr(
+        sys, "argv", [
+            "script.py",
+            "--basic_func.a", "100",
+            "--my_class.val", "1.0",
+            "--literal_func.dataset", "cifar",
+        ],)
+    # fmt: on
+    configs = cli()
+    assert configs[0]["experiment"]["seed"] == 7
+
+
+def test_param_cli_sweep(monkeypatch):
+    """Tests that params participate in grid search sweeps."""
+    seed = param("experiment.seed", int)
+    # fmt: off
+    monkeypatch.setattr(
+        sys, "argv", [
+            "script.py",
+            "--basic_func.a", "100",
+            "--my_class.val", "1.0",
+            "--literal_func.dataset", "cifar",
+            "--experiment.seed", "1", "2", "3",
+        ],)
+    # fmt: on
+    configs = cli()
+    assert len(configs) == 3
+    seeds = [c["experiment"]["seed"] for c in configs]
+    assert seeds == [1, 2, 3]

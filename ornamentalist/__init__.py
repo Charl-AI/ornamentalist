@@ -1,4 +1,43 @@
-"""Ornamentalist is a library for decorator-based hyperparameter configuration."""
+"""Ornamentalist: decorator-based hyperparameter configuration.
+
+Quick reference (for humans and coding agents):
+
+    import ornamentalist
+    from ornamentalist import Configurable
+
+    # 1. Mark configurable parameters with Configurable (or Configurable[default])
+    @ornamentalist.configure()
+    def train(lr: float = Configurable, epochs: int = Configurable[10]):
+        ...
+
+    # 2. For standalone values, use param() instead of a wrapper function
+    seed = ornamentalist.param("experiment.seed", int, default=42)
+
+    # 3. Create config and call setup() before any configurable functions
+    config = {"train": {"lr": 0.01, "epochs": 20}, "experiment": {"seed": 123}}
+    ornamentalist.setup(config)
+    train()              # lr=0.01, epochs=20
+    seed()               # 123
+
+    # Or generate config from CLI automatically:
+    configs = ornamentalist.cli()  # returns a list (see note on sweeps below)
+    for config in configs:
+        ornamentalist.setup(config, force=True)
+        train()
+
+Sharp corners:
+  - cli() returns a LIST of configs. Passing multiple values for an argument
+    (e.g. --train.lr 0.01 0.001) creates a Cartesian product sweep over all
+    combinations. Even with single values, you get a one-element list.
+  - Booleans on the CLI are passed as --flag True / --flag False (not --flag / --no-flag).
+  - Configurable[default] only provides a default for cli(). When using setup()
+    directly, you must always provide every Configurable parameter in the config dict.
+  - setup() can only be called once unless you pass force=True.
+  - param() returns a callable. Use seed(), not seed, to get the value.
+  - Supported CLI types: int, float, bool, str, Literal, and unions with None
+    (e.g. int | None, where "null" or "none" on the CLI maps to None).
+  - Parameters without type annotations are treated as str by the CLI.
+"""
 
 # Written by C Jones, 2025; MIT License.
 
@@ -22,6 +61,7 @@ __all__ = [
     "cli",
     "get_config",
     "configure",
+    "param",
     "Configurable",
     "ConfigDict",
 ]
@@ -108,6 +148,33 @@ class _ConfigurableFn:
         self.cached_partial = None
 
 
+@dataclasses.dataclass
+class _ConfigurableParam:
+    group: str
+    name: str
+    type: type
+    default: typing.Any = _NotGiven
+
+    def __call__(self):
+        if _OPERATING_MODE is OperatingMode.DISABLED:
+            if self.default is not _NotGiven:
+                return self.default
+            raise ValueError(
+                f"ornamentalist is disabled and no default was provided for param '{self.group}.{self.name}'"
+            )
+        if _OPERATING_MODE is OperatingMode.DEFAULT:
+            log.warning(
+                f"Param '{self.group}.{self.name}' accessed before ornamentalist.setup() was called. "
+                "Defaulting to pass-through behaviour."
+            )
+            if self.default is not _NotGiven:
+                return self.default
+            raise ValueError(
+                f"ornamentalist.setup() has not been called and no default for param '{self.group}.{self.name}'"
+            )
+        return get_config()[self.group][self.name]
+
+
 @dataclasses.dataclass(frozen=True)
 class _Cfg:
     config: dict
@@ -126,6 +193,7 @@ _OPERATING_MODE = OperatingMode.DEFAULT
 _GLOBAL_CONFIG: _Cfg | None = None
 _CONFIG_IS_SET = False
 _CONFIGURABLE_FUNCTIONS: list[_ConfigurableFn] = []
+_CONFIGURABLE_PARAMS: list[_ConfigurableParam] = []
 
 
 # --- core ---
@@ -240,6 +308,27 @@ def configure(name: str | None = None, verbose: bool = False):
         return wrapper
 
     return decorator
+
+
+def param(key: str, type: type, default: typing.Any = _NotGiven) -> _ConfigurableParam:
+    """Register a standalone configurable value without needing a wrapper function.
+
+    Usage:
+    ```python
+        seed = ornamentalist.param("experiment.seed", int, default=42)
+
+        config = {"experiment": {"seed": 123}}
+        ornamentalist.setup(config)
+        torch.manual_seed(seed())  # returns 123
+    ```
+    """
+    ALLOWED_TYPES = [int, float, bool, str]
+    if type not in ALLOWED_TYPES:
+        raise ValueError(f"param() only supports types {ALLOWED_TYPES}, got {type}")
+    group, name = key.split(".", 1)
+    p = _ConfigurableParam(group=group, name=name, type=type, default=default)
+    _CONFIGURABLE_PARAMS.append(p)
+    return p
 
 
 # --- cli (optional extra feature) ---
@@ -425,6 +514,28 @@ def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
 
             kwargs["nargs"] = "+"
             group.add_argument(f"--{f.name}.{param_name}", **kwargs)
+
+    param_groups: dict[str, list[_ConfigurableParam]] = {}
+    for p in _CONFIGURABLE_PARAMS:
+        param_groups.setdefault(p.group, []).append(p)
+
+    for group_name, params in param_groups.items():
+        group = parser.add_argument_group(group_name)
+        for p in params:
+            kwargs = {"metavar": "\b"}
+            kwargs["help"] = f"Type: {p.type.__qualname__}"
+            if p.type is bool:
+                kwargs["type"] = _str2bool
+            else:
+                kwargs["type"] = p.type
+            if p.default is not _NotGiven:
+                kwargs["default"] = p.default
+                kwargs["help"] += f" (optional), default={p.default}"
+            else:
+                kwargs["required"] = True
+                kwargs["help"] += " (required)"
+            kwargs["nargs"] = "+"
+            group.add_argument(f"--{p.group}.{p.name}", **kwargs)
 
     args_dict = vars(parser.parse_args())
     param_names = sorted(args_dict.keys())
