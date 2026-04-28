@@ -1,0 +1,684 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.13"
+# dependencies = ["textual"]
+# ///
+"""
+tuiconf — interactive TUI for configuring argparse-based CLI commands.
+
+Discovers parameters by parsing --help output, renders an interactive
+form, and prints the constructed command to stdout on accept.
+Optimised for ornamentalist's structured help format but works with
+any argparse CLI that uses argument groups.
+
+Usage:
+    ./tuiconf <command> [args...]
+    ./tuiconf python examples/cli.py
+    ./tuiconf uv run python my_script.py
+
+Keybindings:
+    j/k, arrows   Navigate between parameters and groups
+    enter          Edit a parameter / expand or collapse a group
+    esc            Cancel edit (if editing) / quit (if navigating)
+    ctrl+d         Accept — exit and print the command to stdout
+    q              Quit without output
+
+Text editing (readline):
+    ctrl+a/e       Jump to start / end of line
+    ctrl+b/f       Move cursor left / right
+    ctrl+k/u       Kill to end / start of line
+    ctrl+w         Delete word backward
+    ctrl+d         Delete character at cursor
+
+Sweep support:
+    Enter comma-separated values in a text field (e.g. "1, 2, 3")
+    or select multiple choices to generate a parameter sweep.
+"""
+
+import dataclasses
+import re
+import shlex
+import subprocess
+import sys
+
+from rich.text import Text as RichText
+from textual.app import App, ComposeResult
+from textual.containers import VerticalScroll
+from textual.screen import Screen
+from textual.widgets import Static
+
+# ── Types ────────────────────────────────────────────────────
+
+
+@dataclasses.dataclass
+class Param:
+    group: str
+    name: str
+    type: str  # "int", "float", "bool", "str"
+    nullable: bool
+    choices: list[str] | None
+    default: str | None
+    required: bool
+    value: str
+
+
+@dataclasses.dataclass
+class ParamGroup:
+    name: str
+    description: str
+    params: list[Param]
+
+
+# ── Theme ────────────────────────────────────────────────────
+
+PURPLE = "rgb(150,75,220)"
+DEEP_BLUE = "rgb(20,55,192)"
+MAGENTA = "rgb(178,79,226)"
+LAVENDER = "rgb(205,215,245)"
+CYAN = "rgb(158,241,235)"
+
+# ── Help output parser ───────────────────────────────────────
+
+
+def parse_help(help_text: str) -> list[ParamGroup]:
+    lines = help_text.replace("\x08", "").split("\n")
+    groups: list[ParamGroup] = []
+    current: ParamGroup | None = None
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Group header: "name:" at column 0 (skip "options:", "usage:")
+        m = re.match(r"^([\w][\w_-]*):$", line)
+        if m and m.group(1) not in ("options", "usage"):
+            desc = ""
+            if (
+                i + 1 < len(lines)
+                and lines[i + 1].strip()
+                and not re.match(r"^\s+--", lines[i + 1])
+            ):
+                desc = lines[i + 1].strip()
+            current = ParamGroup(name=m.group(1), description=desc, params=[])
+            groups.append(current)
+            i += 1
+            continue
+
+        # Param flag: "  --group.param ..."
+        m = re.match(r"^\s+--([\w.]+)", line)
+        if m and m.group(1) != "help" and current is not None:
+            full_name = m.group(1)
+            dot = full_name.find(".")
+            param_name = full_name[dot + 1 :] if dot >= 0 else full_name
+
+            # Collect continuation lines (heavily indented)
+            desc = ""
+            while i + 1 < len(lines) and re.match(r"^\s{16,}", lines[i + 1]):
+                i += 1
+                desc += " " + lines[i].strip()
+            desc = desc.strip()
+
+            # Parse "Type: <type>"
+            ptype = "str"
+            nullable = False
+            tm = re.search(r"Type:\s*([\w\s|]+?)(?:\s*,|\s*\()", desc)
+            if tm:
+                raw = tm.group(1).strip()
+                if "|" in raw and "none" in raw.lower():
+                    nullable = True
+                    inner = next(
+                        (
+                            s.strip()
+                            for s in raw.split("|")
+                            if s.strip().lower() != "none"
+                        ),
+                        "str",
+                    )
+                    ptype = inner if inner in ("int", "float") else "str"
+                else:
+                    ptype = raw if raw in ("int", "float", "bool") else "str"
+
+            # Parse "choices: (val1, val2, ...)"
+            choices = None
+            cm = re.search(r"choices:\s*\(([^)]+)\)", desc)
+            if cm:
+                choices = [s.strip().strip("'\"") for s in cm.group(1).split(",")]
+
+            # Parse "(required)" vs "(optional)"
+            required = "(required)" in desc
+
+            # Parse "default=..."
+            default = None
+            dm = re.search(r"default=(.+)$", desc)
+            if dm:
+                default = dm.group(1).strip()
+
+            current.params.append(
+                Param(
+                    group=current.name,
+                    name=param_name,
+                    type=ptype,
+                    nullable=nullable,
+                    choices=choices,
+                    default=default,
+                    required=required,
+                    value=default or "",
+                )
+            )
+
+        i += 1
+
+    return groups
+
+
+# ── Helpers ──────────────────────────────────────────────────
+
+
+def get_values(param: Param) -> list[str]:
+    if not param.value:
+        return []
+    return [s.strip() for s in param.value.split(",") if s.strip()]
+
+
+def compute_grid_size(groups: list[ParamGroup]) -> int:
+    size = 1
+    for g in groups:
+        for p in g.params:
+            n = len(get_values(p))
+            if n > 1:
+                size *= n
+    return size
+
+
+def has_sweep(groups: list[ParamGroup]) -> bool:
+    return any(len(get_values(p)) > 1 for g in groups for p in g.params)
+
+
+def build_command_args(
+    target_cmd: list[str], groups: list[ParamGroup]
+) -> list[str]:
+    args = list(target_cmd)
+    for g in groups:
+        for p in g.params:
+            vals = get_values(p)
+            if not vals and not p.required:
+                continue
+            if len(vals) == 1 and vals[0] == (p.default or "") and not p.required:
+                continue
+            args.append(f"--{g.name}.{p.name}")
+            args.extend(vals)
+    return args
+
+
+def type_label(param: Param) -> str:
+    if param.choices:
+        return f"Literal[{', '.join(param.choices)}]"
+    if param.nullable:
+        return f"{param.type} | None"
+    return param.type
+
+
+def validate(groups: list[ParamGroup]) -> str | None:
+    for g in groups:
+        for p in g.params:
+            if p.required and not p.value.strip():
+                return f"{g.name}.{p.name} is required"
+    return None
+
+
+# ── Help Screen ─────────────────────────────────────────────
+
+HELP_TEXT = """\
+[bold rgb(150,75,220)]tuiconf[/] — interactive TUI for configuring argparse-based CLI commands.
+
+[bold]Keybindings[/]
+  [rgb(158,241,235)]j/k[/], [rgb(158,241,235)]arrows[/]   Navigate between parameters and groups
+  [rgb(158,241,235)]enter[/]          Edit a parameter / expand or collapse a group
+  [rgb(158,241,235)]esc[/]            Cancel edit (if editing) / quit (if navigating)
+  [rgb(158,241,235)]ctrl+d[/]         Accept — exit and print the command to stdout
+  [rgb(158,241,235)]q[/]              Quit without output
+  [rgb(158,241,235)]?[/]              Show this help
+
+[bold]Text editing (readline)[/]
+  [rgb(158,241,235)]ctrl+a/e[/]       Jump to start / end of line
+  [rgb(158,241,235)]ctrl+b/f[/]       Move cursor left / right
+  [rgb(158,241,235)]ctrl+k/u[/]       Kill to end / start of line
+  [rgb(158,241,235)]ctrl+w[/]         Delete word backward
+  [rgb(158,241,235)]ctrl+d[/]         Delete character at cursor
+
+[bold]Sweep support[/]
+  Enter comma-separated values in a text field (e.g. "1, 2, 3")
+  or select multiple choices to generate a parameter sweep.
+"""
+
+
+class HelpScreen(Screen):
+    CSS = """
+    #help-header { height: auto; padding: 0 1; margin-bottom: 1; }
+    #help-scroll { height: 1fr; }
+    #help-body   { height: auto; padding: 0 2; }
+    #help-keys   { height: auto; padding: 0 1; margin-top: 1; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="help-header")
+        with VerticalScroll(id="help-scroll"):
+            yield Static(HELP_TEXT, id="help-body")
+        yield Static(id="help-keys")
+
+    def on_mount(self):
+        t = RichText()
+        t.append(" tuiconf", style=PURPLE)
+        t.append(" — help", style="dim")
+        self.query_one("#help-header").update(t)
+
+        t = RichText()
+        t.append(" esc", style=CYAN)
+        t.append(" back", style="dim")
+        self.query_one("#help-keys").update(t)
+
+    def on_key(self, event):
+        if event.key in ("escape", "q", "question_mark", "ctrl+c"):
+            self.app.pop_screen()
+        event.stop()
+
+
+# ── Configure Screen ────────────────────────────────────────
+
+
+class ConfigureScreen(Screen):
+    CSS = """
+    #header { height: auto; padding: 0 1; margin-bottom: 1; }
+    #scroll { height: 1fr; }
+    #params { height: auto; padding: 0 1; }
+    #status { height: auto; padding: 0 1; margin-top: 1; }
+    #keys   { height: auto; padding: 0 1; }
+    """
+
+    def __init__(self, target_cmd: list[str], groups: list[ParamGroup]):
+        super().__init__()
+        self.target_cmd = target_cmd
+        self.groups = groups
+        self._fg = 0  # focused group
+        self._fp = -1  # focused param (-1 = group header)
+        self._ep = -1  # editing param (-1 = not editing)
+        self._expanded: set[int] = set(range(len(groups)))
+        self._ci = 0  # choice cursor index
+        self._edit_buf = ""  # text editing buffer
+        self._edit_pos = 0  # cursor position in edit buffer
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="header")
+        with VerticalScroll(id="scroll"):
+            yield Static(id="params")
+        yield Static(id="status")
+        yield Static(id="keys")
+
+    def on_mount(self):
+        t = RichText()
+        t.append(" tuiconf", style=PURPLE)
+        t.append(" — configure\n", style="dim")
+        t.append(f" Target: {shlex.join(self.target_cmd)}", style="dim")
+        self.query_one("#header").update(t)
+
+        t = RichText()
+        for i, (key, label) in enumerate(
+            [
+                ("j/k", "navigate"),
+                ("enter", "edit/expand"),
+                ("esc", "stop edit"),
+                ("^D", "done"),
+                ("q", "quit"),
+                ("?", "help"),
+            ]
+        ):
+            if i:
+                t.append("  ")
+            t.append(f" {key}", style=CYAN)
+            t.append(f" {label}", style="dim")
+        self.query_one("#keys").update(t)
+
+        self._refresh()
+
+    def _refresh(self):
+        self.query_one("#params").update(self._build_params())
+        # Status
+        t = RichText()
+        error = validate(self.groups)
+        if error:
+            t.append(f" ✗ {error}", style="red")
+        elif has_sweep(self.groups):
+            t.append(
+                f" ⟐ {compute_grid_size(self.groups)} configurations",
+                style=MAGENTA,
+            )
+        else:
+            t.append(
+                f" ✓ {compute_grid_size(self.groups)} configuration ready",
+                style="green",
+            )
+        self.query_one("#status").update(t)
+
+    # ── Render ──
+
+    def _build_params(self) -> RichText:
+        t = RichText()
+        for gi, group in enumerate(self.groups):
+            is_exp = gi in self._expanded
+            hdr_focus = self._fg == gi and self._fp == -1
+            arrow = "▼" if is_exp else "▶"
+            modified = sum(
+                1 for p in group.params if p.value != (p.default or "")
+            )
+
+            t.append("› " if hdr_focus else "  ", style=CYAN if hdr_focus else "")
+            t.append(
+                f"{arrow} {group.name}",
+                style=PURPLE if hdr_focus else DEEP_BLUE,
+            )
+            if modified:
+                t.append(f" ({modified} modified)", style=MAGENTA)
+            if group.description:
+                t.append(f" — {group.description}", style="dim")
+            t.append("\n")
+
+            if is_exp:
+                for pi, param in enumerate(group.params):
+                    focused = self._fg == gi and self._fp == pi
+                    editing = self._fg == gi and self._ep == pi
+                    self._render_param(t, param, focused, editing)
+        return t
+
+    def _render_param(
+        self, t: RichText, param: Param, focused: bool, editing: bool
+    ):
+        label = f"{param.group}.{param.name}"
+        is_default = param.value == (param.default or "")
+        is_sweep = len(get_values(param)) > 1
+
+        # ── Choice editing (multi-select checkboxes) ──
+        if param.choices and editing:
+            t.append("    › ", style=CYAN)
+            t.append(label, style=PURPLE)
+            t.append(" [space: toggle, enter: confirm]", style="dim")
+            t.append("\n")
+            selected = set(get_values(param))
+            for ci, choice in enumerate(param.choices):
+                cursor = ci == self._ci
+                checked = choice in selected
+                t.append("        ")
+                t.append("› " if cursor else "  ", style=CYAN if cursor else "")
+                t.append(
+                    "◉ " if checked else "○ ",
+                    style=CYAN if checked else "dim",
+                )
+                style = CYAN if cursor else (PURPLE if checked else LAVENDER)
+                t.append(choice, style=style)
+                t.append("\n")
+            return
+
+        # ── Bool editing ──
+        if param.type == "bool" and editing:
+            is_true = param.value == "True"
+            t.append("    › ", style=CYAN)
+            t.append(label, style=PURPLE)
+            t.append(" → ", style=CYAN)
+            t.append("● True", style=CYAN if is_true else "dim")
+            t.append(" / ")
+            t.append("● False", style=CYAN if not is_true else "dim")
+            t.append(" [enter: toggle]", style="dim")
+            t.append("\n")
+            return
+
+        # ── Text editing (inline with cursor) ──
+        if editing:
+            t.append("    › ", style=CYAN)
+            t.append(label, style=PURPLE)
+            t.append(" → ", style=CYAN)
+            t.append(self._edit_buf[: self._edit_pos], style=CYAN)
+            t.append("▏", style=CYAN)
+            t.append(self._edit_buf[self._edit_pos :], style=CYAN)
+            t.append("\n")
+            return
+
+        # ── Display mode ──
+        t.append("    ")
+        t.append("› " if focused else "  ", style=CYAN if focused else "")
+        t.append(label, style=PURPLE if focused else LAVENDER)
+        t.append(f"  {type_label(param)}  ", style="dim")
+
+        display_val = param.value or "(empty)"
+        t.append(display_val, style="dim" if is_default else CYAN)
+
+        if not is_default and not is_sweep:
+            t.append(" *", style=MAGENTA)
+        if is_sweep:
+            t.append(f" ⟐ {len(get_values(param))} values", style=MAGENTA)
+        if param.nullable and focused:
+            t.append(' (accepts "none")', style="dim")
+        elif param.required and not param.value:
+            t.append(" (required)", style="dim")
+        t.append("\n")
+
+    # ── Key handling ──
+
+    def on_key(self, event):
+        if self._ep >= 0:
+            self._handle_editing_key(event)
+        else:
+            self._handle_nav_key(event)
+        event.stop()
+
+    def _handle_editing_key(self, event):
+        param = self.groups[self._fg].params[self._ep]
+        key = event.key
+
+        if key in ("escape", "ctrl+c"):
+            self._ep = -1
+            self._refresh()
+            return
+
+        # Choice editing
+        if param.choices:
+            if key in ("j", "down"):
+                self._ci = min(len(param.choices) - 1, self._ci + 1)
+            elif key in ("k", "up"):
+                self._ci = max(0, self._ci - 1)
+            elif key == "space":
+                selected = set(get_values(param))
+                choice = param.choices[self._ci]
+                if choice in selected:
+                    selected.discard(choice)
+                else:
+                    selected.add(choice)
+                # Preserve original order
+                param.value = ", ".join(
+                    c for c in param.choices if c in selected
+                )
+            elif key == "enter":
+                self._ep = -1
+            self._refresh()
+            return
+
+        # Bool editing
+        if param.type == "bool":
+            if key in ("enter", "space"):
+                param.value = "False" if param.value == "True" else "True"
+                self._ep = -1
+            self._refresh()
+            return
+
+        # Text editing (readline / emacs bindings)
+        buf, pos = self._edit_buf, self._edit_pos
+        if key == "enter":
+            param.value = buf
+            self._ep = -1
+        elif key == "backspace":
+            if pos > 0:
+                self._edit_buf = buf[: pos - 1] + buf[pos:]
+                self._edit_pos -= 1
+        elif key in ("delete", "ctrl+d"):
+            if pos < len(buf):
+                self._edit_buf = buf[:pos] + buf[pos + 1 :]
+        elif key in ("left", "ctrl+b"):
+            self._edit_pos = max(0, pos - 1)
+        elif key in ("right", "ctrl+f"):
+            self._edit_pos = min(len(buf), pos + 1)
+        elif key in ("home", "ctrl+a"):
+            self._edit_pos = 0
+        elif key in ("end", "ctrl+e"):
+            self._edit_pos = len(buf)
+        elif key == "ctrl+k":
+            self._edit_buf = buf[:pos]
+        elif key == "ctrl+u":
+            self._edit_buf = buf[pos:]
+            self._edit_pos = 0
+        elif key == "ctrl+w":
+            i = pos
+            while i > 0 and buf[i - 1] == " ":
+                i -= 1
+            while i > 0 and buf[i - 1] != " ":
+                i -= 1
+            self._edit_buf = buf[:i] + buf[pos:]
+            self._edit_pos = i
+        elif event.character and event.character.isprintable():
+            self._edit_buf = buf[:pos] + event.character + buf[pos:]
+            self._edit_pos += 1
+        self._refresh()
+
+    def _handle_nav_key(self, event):
+        key = event.key
+
+        if key in ("q", "escape", "ctrl+c"):
+            self.app.exit()
+            return
+
+        if key == "question_mark":
+            self.app.push_screen(HelpScreen())
+            return
+
+        if key == "ctrl+d":
+            if not validate(self.groups):
+                cmd = shlex.join(
+                    build_command_args(self.target_cmd, self.groups)
+                )
+                self.app.exit(result=cmd)
+            return
+
+        group = self.groups[self._fg]
+
+        if key in ("j", "down"):
+            if self._fp == -1:
+                if self._fg in self._expanded and group.params:
+                    self._fp = 0
+                elif self._fg < len(self.groups) - 1:
+                    self._fg += 1
+                    self._fp = -1
+            elif self._fp < len(group.params) - 1:
+                self._fp += 1
+            elif self._fg < len(self.groups) - 1:
+                self._fg += 1
+                self._fp = -1
+
+        elif key in ("k", "up"):
+            if self._fp == 0:
+                self._fp = -1
+            elif self._fp > 0:
+                self._fp -= 1
+            elif self._fg > 0:
+                self._fg -= 1
+                prev = self.groups[self._fg]
+                if self._fg in self._expanded and prev.params:
+                    self._fp = len(prev.params) - 1
+                else:
+                    self._fp = -1
+
+        elif key == "tab":
+            self._fg = (self._fg + 1) % len(self.groups)
+            self._fp = -1
+
+        elif key == "enter":
+            if self._fp == -1:
+                # Toggle group expand/collapse
+                if self._fg in self._expanded:
+                    self._expanded.discard(self._fg)
+                else:
+                    self._expanded.add(self._fg)
+            else:
+                # Start editing
+                param = group.params[self._fp]
+                self._ep = self._fp
+                if param.choices:
+                    vals = set(get_values(param))
+                    self._ci = 0
+                    if vals and param.choices:
+                        for ci, c in enumerate(param.choices):
+                            if c in vals:
+                                self._ci = ci
+                                break
+                elif param.type != "bool":
+                    self._edit_buf = param.value
+                    self._edit_pos = len(param.value)
+
+        self._refresh()
+
+
+# ── App ──────────────────────────────────────────────────────
+
+
+class OrnamentalApp(App):
+    TITLE = "tuiconf"
+    CSS = "Screen { background: $background; }"
+
+    def __init__(self, target_cmd: list[str], groups: list[ParamGroup]):
+        super().__init__()
+        self._target_cmd = target_cmd
+        self._groups = groups
+
+    def on_mount(self):
+        self.push_screen(ConfigureScreen(self._target_cmd, self._groups))
+
+
+# ── Entry ────────────────────────────────────────────────────
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print("Usage: ./tuiconf <command> [args...]")
+        print("Example: ./tuiconf python examples/cli.py")
+        sys.exit(1)
+
+    target_cmd = args
+
+    try:
+        result = subprocess.run(
+            [*target_cmd, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        help_text = result.stdout or result.stderr or ""
+    except Exception as e:
+        print(f'Failed to run "{shlex.join(target_cmd)} --help": {e}')
+        sys.exit(1)
+
+    if not help_text.strip():
+        print(f"No --help output from: {shlex.join(target_cmd)}")
+        sys.exit(1)
+
+    groups = parse_help(help_text)
+    if not groups:
+        print("No parameter groups found in --help output.")
+        print("This TUI works best with ornamentalist-based CLIs.")
+        sys.exit(1)
+
+    app = OrnamentalApp(target_cmd, groups)
+    cmd = app.run()
+
+    if cmd:
+        print(cmd)
+
+
+if __name__ == "__main__":
+    main()
