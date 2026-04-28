@@ -123,3 +123,4 @@ Call `ornamentalist.disable()` to make all decorators pass through without requi
 - `examples/submitit_basic.py` — launching ornamentalist jobs with submitit.
 - `examples/cli.py` — the CLI feature with sweep examples and help output.
 - `examples/diffusion_transformer` — a full research codebase using ornamentalist.
+- `tuiconf` — experimental standalone TUI for interactively building CLI commands (works with any argparse CLI, optimised for ornamentalist).
