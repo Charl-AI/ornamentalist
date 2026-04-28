@@ -32,75 +32,94 @@ import ornamentalist
 from ornamentalist import Configurable
 
 
-# basic usage of ornamentalist...
-# setting verbose=True is useful for debugging
 @ornamentalist.configure(verbose=True)
 def add_n(x: int, n: int = Configurable):
     print(x + n)
 
 
-# by default, ornamentalist looks for parameters
-# in CONFIG_DICT[func.__name__],
-# you can override this with a custom key like so
 @ornamentalist.configure(name="greeting_config")
 def greet(name: str = Configurable):
     print(f"Hello, {name}")
 
 
-# you can even use ornamentalist on classes!
 class MyClass:
-    # you probably want to give constructors custom
-    # names, else they will just be "__init__"
     @ornamentalist.configure(name="myclass.init")
     def __init__(self, a: float = Configurable):
         print(a)
 
 
 if __name__ == "__main__":
-    # you can manually supply config with argparse, hydra etc.
-    # we also provide ornamentalist.cli() to automatically
-    # generate a basic CLI.
-    # But we will hardcode it for this example...
     config = {
         "add_n": {"n": 5},
-        # greeting_config and myclass_init are the
-        # custom names we specified earlier
         "greeting_config": {"name": "Alice"},
         "myclass.init": {"a": 4.5},
     }
     ornamentalist.setup(config)
 
-    add_n(10)
-    greet()
-    MyClass()
-
-    # you can access the config dict anywhere in your program
-    # through `ornamentalist.get_config()`
-    assert ornamentalist.get_config() == config
+    add_n(10)   # 15
+    greet()     # Hello, Alice
+    MyClass()   # 4.5
 ```
+
+By default, ornamentalist uses `func.__name__` as the config key. Use `@configure(name=...)` to override this — useful for class `__init__` methods (which would otherwise all be `"__init__"`), or to avoid name collisions. Setting `verbose=True` logs which parameters are being injected, which is helpful for debugging.
+
+## Default Values
+
+Use `Configurable[value]` to provide a default. Parameters with defaults can be omitted from the config dict; parameters without defaults are required.
+
+```python
+@ornamentalist.configure()
+def train(lr: float = Configurable, epochs: int = Configurable[10]):
+    ...
+
+ornamentalist.setup({"train": {"lr": 0.01}})  # epochs defaults to 10
+train()  # lr=0.01, epochs=10
+```
+
+Unknown keys in the config are rejected, catching typos early.
 
 ## Standalone Parameters
 
-Sometimes you want to configure a value that doesn't naturally belong to a function — for example, a random seed. Instead of wrapping it in a dummy function, use `ornamentalist.param()`:
+For values that don't belong to a function (e.g. a random seed), use `ornamentalist.param()`:
 
 ```python
-import ornamentalist
-
 seed = ornamentalist.param("seed", int, default=42)
 
-config = {"seed": 123}
-ornamentalist.setup(config)
-
-torch.manual_seed(seed())  # returns 123
+ornamentalist.setup({"seed": 123})
+torch.manual_seed(seed())  # 123
 ```
 
 Params are scalar values in the config dict and show up as `--seed` in the CLI. Supported types are `int`, `float`, `bool`, and `str`.
 
+## Automatic CLI
+
+`ornamentalist.cli()` generates an argparse CLI from all registered functions and params. Pass multiple values for any argument to run a grid search over the cartesian product.
+
+```python
+@ornamentalist.configure()
+def train(lr: float = Configurable, epochs: int = Configurable[10]):
+    ...
+
+configs = ornamentalist.cli()
+for config in configs:
+    ornamentalist.setup(config, force=True)
+    train()
+```
+
+```
+$ python train.py --train.lr 0.01 0.001 --train.epochs 10 20
+# runs 4 configs: (0.01, 10), (0.01, 20), (0.001, 10), (0.001, 20)
+```
+
+`cli()` returns a list of `ConfigDict` objects — one per combination. See `examples/cli.py` for more detail, including `Literal` types, `int | None` unions, and the auto-generated `--help` output.
+
+## Disabling Ornamentalist
+
+Call `ornamentalist.disable()` to make all decorators pass through without requiring `setup()`. This is useful for tests, notebooks, or importing modules that use ornamentalist without configuring them.
+
 ## Examples
 
-Ornamentalist is a simple library! You can learn the whole thing by reading through these examples:
-
-- `examples/basics.py` teaches you the basic usage of ornamentalist (as seen above).
-- `examples/submitit_basic.py` shows you a simple pattern for launching ornamentalist jobs with submitit.
-- `examples/cli.py` demonstrates how to use the automatic CLI generation feature (with example outputs).
-- `examples/diffusion_transformer` is an example of a full research codebase using ornamentalist.
+- `examples/basics.py` — basic usage as seen above.
+- `examples/submitit_basic.py` — launching ornamentalist jobs with submitit.
+- `examples/cli.py` — the CLI feature with sweep examples and help output.
+- `examples/diffusion_transformer` — a full research codebase using ornamentalist.
