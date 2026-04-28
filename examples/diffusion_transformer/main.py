@@ -16,16 +16,19 @@ from examples.diffusion_transformer.dit import get_model_cls
 from examples.diffusion_transformer.mnist import get_dataloaders
 from examples.diffusion_transformer.trainer import TrainState, train
 
+seed = ornamentalist.param("seed", int, default=42)
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 
 def main(config):
     ornamentalist.setup(config, force=True)
+    torch.manual_seed(seed())
     with Distributed() as D:
         job_id = submitit.JobEnvironment().job_id
         output_dir = pathlib.Path.cwd().parent / job_id
-        log.info(f"Running job ID {job_id}")
+        log.info(f"Running job ID {job_id}, seed={seed()}")
         log.info(f"Using {output_dir} as output directory")
 
         model_cls = get_model_cls()

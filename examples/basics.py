@@ -27,6 +27,11 @@ class MyClass:
         print(a)
 
 
+# for standalone values that don't belong to a function,
+# use ornamentalist.param() instead
+seed = ornamentalist.param("seed", int, default=0)
+
+
 if __name__ == "__main__":
     # you can manually supply config with argparse, hydra etc.
     # we also provide ornamentalist.cli() to automatically
@@ -38,12 +43,15 @@ if __name__ == "__main__":
         # custom names we specified earlier
         "greeting_config": {"name": "Alice"},
         "myclass.init": {"a": 4.5},
+        # standalone params are scalar values in the config
+        "seed": 123,
     }
     ornamentalist.setup(config)
 
     add_n(10)
     greet()
     MyClass()
+    print(f"seed = {seed()}")
 
     # you can access the config dict anywhere in your program
     # through `ornamentalist.get_config()`
@@ -55,3 +63,4 @@ if __name__ == "__main__":
 # > 15
 # > Hello, Alice
 # > 4.5
+# > seed = 123
