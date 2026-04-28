@@ -10,13 +10,9 @@ You can use ornamentalist alongside your favourite configuration libraries like 
 
 I encourage you to read the short [blog post](https://charl-ai.github.io/blog/args) to better understand the motivation behind this libary and why I think ornamentalist is a good solution. For worked examples of how to use ornamentalist with other tools such as hydra, argparse, or submitit, check out the `examples/` directory.
 
-You can install ornamentalist with pip:
+Ornamentalist is only [one file](ornamentalist/__init__.py), so the recommended way to install it is to simply copy-paste it into your projects. You can also install ornamentalist with `pip install ornamentalist`. However, it may lag behind the version available here.
 
-```
-pip install ornamentalist
-```
-
-Ornamentalist is only 1-file, so feel free to copy-paste it into your projects if you prefer.
+Finally, note that I consider ornamentalist a (mostly) complete piece of software. While I will likely continue to address sharp corners and compatibility, I am unlikely to be overhauling or adding any major features.
 
 ## Usage
 
