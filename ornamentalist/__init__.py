@@ -1,6 +1,6 @@
 """Ornamentalist: decorator-based hyperparameter configuration.
 
-Quick reference (for humans and coding agents):
+Quick reference:
 
     import ornamentalist
     from ornamentalist import Configurable
@@ -16,8 +16,8 @@ Quick reference (for humans and coding agents):
     # 3. Create config and call setup() before any configurable functions
     config = {"train": {"lr": 0.01, "epochs": 20}, "seed": 123}
     ornamentalist.setup(config)
-    train()              # lr=0.01, epochs=20
-    seed()               # 123
+    train()              # runs train function with lr=0.01, epochs=20
+    seed()               # returns 123
 
     # Or generate config from CLI automatically:
     configs = ornamentalist.cli()  # returns a list (see note on sweeps below)
