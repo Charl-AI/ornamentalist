@@ -85,19 +85,24 @@ class _ConfigurableFn:
             config = get_config()
             if self.name not in config:
                 raise KeyError(
-                    f"Configuration for '{self.name}' not found in global config, got {get_config()=}"
+                    f"Configuration for '{self.name}' not found in config. "
+                    f"Available keys: {sorted(config.keys())}"
                 )
             injected_params = config[self.name]
             if self.verbose:
                 log.info(msg=f"Injecting parameters {injected_params} into {fn_name}")
 
-            if set(injected_params.keys()) != set(self.params_to_inject):
-                raise ValueError(
-                    f"Tried to inject parameters into {fn_name}, but "
-                    + "parameters injected by config do not match "
-                    + "the parameters marked as Configurable:\n"
-                    + f"{set(injected_params)=} != {set(self.params_to_inject)=}"
-                )
+            expected = set(self.params_to_inject)
+            got = set(injected_params)
+            if got != expected:
+                missing = expected - got
+                extra = got - expected
+                parts = [f"Config mismatch for {fn_name}:"]
+                if missing:
+                    parts.append(f"  missing from config: {missing}")
+                if extra:
+                    parts.append(f"  unexpected in config: {extra}")
+                raise ValueError("\n".join(parts))
 
             self.cached_partial = functools.partial(
                 self.original_func, **injected_params
