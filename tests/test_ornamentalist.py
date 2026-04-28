@@ -68,7 +68,7 @@ def test_incomplete_config_raises_error():
     parameter, confirming we don't silently fall back to defaults."""
     config = {"basic_func": {"a": 5}}  # 'b' is missing
     setup(config)
-    with pytest.raises(ValueError, match="parameters injected by config do not match"):
+    with pytest.raises(ValueError, match="missing from config"):
         basic_func()
 
 
