@@ -12,7 +12,6 @@ import logging
 import types
 import typing
 
-logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ornamentalist")
 
 
