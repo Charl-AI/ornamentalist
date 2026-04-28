@@ -67,12 +67,25 @@ def test_decorated_function_injection():
     assert basic_func() == 25
 
 
-def test_incomplete_config_raises_error():
-    """Tests that a ValueError is raised if the config is missing a required
-    parameter, confirming we don't silently fall back to defaults."""
-    config = {"basic_func": {"a": 5}}  # 'b' is missing
+def test_missing_required_param_raises_error():
+    """Tests that a ValueError is raised if a required parameter (no default) is missing."""
+    config = {"basic_func": {"b": 10}}  # 'a' is required (no default)
     setup(config)
-    with pytest.raises(ValueError, match="missing from config"):
+    with pytest.raises(ValueError, match="missing required parameters"):
+        basic_func()
+
+
+def test_default_fills_missing_param():
+    """Tests that Configurable[default] fills in missing params in setup()."""
+    setup({"basic_func": {"a": 5}})  # 'b' has Configurable[10]
+    assert basic_func() == 15
+
+
+def test_unknown_config_key_raises_error():
+    """Tests that an unknown key in the config raises a ValueError (catches typos)."""
+    config = {"basic_func": {"a": 5, "b": 10, "typo": 1}}
+    setup(config)
+    with pytest.raises(ValueError, match="unexpected in config"):
         basic_func()
 
 
@@ -299,11 +312,18 @@ def test_param_with_default():
 
 
 def test_param_missing_config_raises_error():
-    """Tests that accessing a param whose group is not in the config raises a KeyError."""
+    """Tests that accessing a param without a default whose key is missing raises a KeyError."""
     seed = param("experiment.seed", int)
     setup({"other": {"key": 1}})
     with pytest.raises(KeyError):
         seed()
+
+
+def test_param_default_fills_missing():
+    """Tests that a param with a default resolves when its key is absent from config."""
+    seed = param("experiment.seed", int, default=42)
+    setup({"other": {"key": 1}})
+    assert seed() == 42
 
 
 def test_param_disabled_mode_with_default(monkeypatch):

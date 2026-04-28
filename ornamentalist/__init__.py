@@ -30,8 +30,9 @@ Sharp corners:
     (e.g. --train.lr 0.01 0.001) creates a Cartesian product sweep over all
     combinations. Even with single values, you get a one-element list.
   - Booleans on the CLI are passed as --flag True / --flag False (not --flag / --no-flag).
-  - Configurable[default] only provides a default for cli(). When using setup()
-    directly, you must always provide every Configurable parameter in the config dict.
+  - Configurable[default] provides a default for both cli() and setup(). Parameters
+    with defaults can be omitted from the config dict; parameters without defaults
+    are required. Unknown keys in the config are rejected (catches typos).
   - setup() can only be called once unless you pass force=True.
   - param() returns a callable. Use seed(), not seed, to get the value.
   - Supported CLI types: int, float, bool, str, Literal, and unions with None
@@ -90,9 +91,9 @@ Configurable: typing.Any = _Configurable()
 about which parameters need to be replaced. Use it as a default
 argument for any parameter you wish to be configured by ornamentalist.
 
-To provide a default value for use with ornamentalist.cli(),
-use subscript notation, e.g. `param: int = Configurable[123]`.
-Default values will have no effect if not using ornamentalist.cli()."""
+To provide a default value, use subscript notation,
+e.g. `param: int = Configurable[123]`. Parameters with defaults
+can be omitted from the config dict passed to setup()."""
 
 
 @dataclasses.dataclass
@@ -102,7 +103,7 @@ class _ConfigurableFn:
     params_to_inject: list[str]
     signature: inspect.Signature
     cached_partial: typing.Callable | None = None
-    cli_defaults: dict[str, typing.Any] | None = None
+    defaults: dict[str, typing.Any] | None = None
     verbose: bool = False
 
     def __call__(self, *args, **kwargs):
@@ -131,20 +132,24 @@ class _ConfigurableFn:
             if self.verbose:
                 log.info(msg=f"Injecting parameters {injected_params} into {fn_name}")
 
-            expected = set(self.params_to_inject)
-            got = set(injected_params)
-            if got != expected:
-                missing = expected - got
-                extra = got - expected
-                parts = [f"Config mismatch for {fn_name}:"]
-                if missing:
-                    parts.append(f"  missing from config: {missing}")
-                if extra:
-                    parts.append(f"  unexpected in config: {extra}")
-                raise ValueError("\n".join(parts))
+            unknown = set(injected_params.keys()) - set(self.params_to_inject)
+            if unknown:
+                raise ValueError(
+                    f"Config mismatch for {fn_name}:\n"
+                    f"  unexpected in config: {unknown}"
+                )
 
+            required = set(self.params_to_inject) - set(self.defaults)
+            missing = required - set(injected_params.keys())
+            if missing:
+                raise ValueError(
+                    f"Config mismatch for {fn_name}:\n"
+                    f"  missing required parameters (no default): {missing}"
+                )
+
+            full_params = {**self.defaults, **injected_params}
             self.cached_partial = functools.partial(
-                self.original_func, **injected_params
+                self.original_func, **full_params
             )
         return self.cached_partial(*args, **kwargs)
 
@@ -176,7 +181,15 @@ class _ConfigurableParam:
             raise ValueError(
                 f"ornamentalist.setup() has not been called and no default for param '{self.group}.{self.name}'"
             )
-        return get_config()[self.group][self.name]
+        config = get_config()
+        group_config = config.get(self.group, {})
+        if self.name in group_config:
+            return group_config[self.name]
+        if self.default is not _NotGiven:
+            return self.default
+        raise KeyError(
+            f"'{self.group}.{self.name}' not found in config and no default provided"
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -283,12 +296,12 @@ def configure(name: str | None = None, verbose: bool = False):
         signature = inspect.signature(func)
 
         params_to_inject = []
-        cli_defaults = {}
+        defaults = {}
         for p in signature.parameters.values():
             if isinstance(p.default, _Configurable):
                 params_to_inject.append(p.name)
                 if p.default.default is not _NotGiven:
-                    cli_defaults[p.name] = p.default.default
+                    defaults[p.name] = p.default.default
 
         if not params_to_inject:
             if verbose:
@@ -301,7 +314,7 @@ def configure(name: str | None = None, verbose: bool = False):
             params_to_inject=params_to_inject,
             signature=signature,
             verbose=verbose,
-            cli_defaults=cli_defaults,
+            defaults=defaults,
         )
         _CONFIGURABLE_FUNCTIONS.append(configurable_fn)
 
@@ -509,9 +522,9 @@ def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
                 elif anno is not inspect.Parameter.empty:
                     kwargs["type"] = anno
 
-            if f.cli_defaults is not None and param_name in f.cli_defaults:
-                kwargs["default"] = f.cli_defaults[param_name]
-                kwargs["help"] += f" (optional), default={f.cli_defaults[param_name]}"
+            if f.defaults is not None and param_name in f.defaults:
+                kwargs["default"] = f.defaults[param_name]
+                kwargs["help"] += f" (optional), default={f.defaults[param_name]}"
             else:
                 kwargs["required"] = True
                 kwargs["help"] += " (required)"
