@@ -86,15 +86,15 @@ Sometimes you want to configure a value that doesn't naturally belong to a funct
 ```python
 import ornamentalist
 
-seed = ornamentalist.param("experiment.seed", int, default=42)
+seed = ornamentalist.param("seed", int, default=42)
 
-config = {"experiment": {"seed": 123}}
+config = {"seed": 123}
 ornamentalist.setup(config)
 
 torch.manual_seed(seed())  # returns 123
 ```
 
-The dotted key (`"experiment.seed"`) maps to `config["experiment"]["seed"]` and shows up as `--experiment.seed` in the CLI. Supported types are `int`, `float`, `bool`, and `str`.
+Params are scalar values in the config dict and show up as `--seed` in the CLI. Supported types are `int`, `float`, `bool`, and `str`.
 
 ## Examples
 

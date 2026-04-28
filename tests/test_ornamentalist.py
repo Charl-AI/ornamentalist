@@ -9,15 +9,15 @@ from ornamentalist import Configurable, cli, configure, get_config, param, setup
 
 @pytest.fixture(autouse=True)
 def reset_ornamentalist_state():
-    fns_before = list(ornamentalist._CONFIGURABLE_FUNCTIONS)
-    params_before = list(ornamentalist._CONFIGURABLE_PARAMS)
+    registry_before = dict(ornamentalist._REGISTRY)
     yield
     ornamentalist._GLOBAL_CONFIG = None
     ornamentalist._CONFIG_IS_SET = False
-    for f in ornamentalist._CONFIGURABLE_FUNCTIONS:
-        f.reset()
-    ornamentalist._CONFIGURABLE_FUNCTIONS[:] = fns_before
-    ornamentalist._CONFIGURABLE_PARAMS[:] = params_before
+    for entry in ornamentalist._REGISTRY.values():
+        if isinstance(entry, ornamentalist._ConfigurableFn):
+            entry.reset()
+    ornamentalist._REGISTRY.clear()
+    ornamentalist._REGISTRY.update(registry_before)
 
 
 @configure()
@@ -299,21 +299,21 @@ def test_cli_unsupported_type_raises_error():
 
 def test_param_basic():
     """Tests that a standalone param resolves its value from the config."""
-    seed = param("experiment.seed", int)
-    setup({"experiment": {"seed": 42}})
+    seed = param("seed", int)
+    setup({"seed": 42})
     assert seed() == 42
 
 
 def test_param_with_default():
     """Tests that a param with a default can be used, and that the config value takes precedence."""
-    seed = param("experiment.seed", int, default=0)
-    setup({"experiment": {"seed": 99}})
+    seed = param("seed", int, default=0)
+    setup({"seed": 99})
     assert seed() == 99
 
 
 def test_param_missing_config_raises_error():
     """Tests that accessing a param without a default whose key is missing raises a KeyError."""
-    seed = param("experiment.seed", int)
+    seed = param("seed", int)
     setup({"other": {"key": 1}})
     with pytest.raises(KeyError):
         seed()
@@ -321,21 +321,21 @@ def test_param_missing_config_raises_error():
 
 def test_param_default_fills_missing():
     """Tests that a param with a default resolves when its key is absent from config."""
-    seed = param("experiment.seed", int, default=42)
+    seed = param("seed", int, default=42)
     setup({"other": {"key": 1}})
     assert seed() == 42
 
 
 def test_param_disabled_mode_with_default(monkeypatch):
     """Tests that a param returns its default when ornamentalist is disabled."""
-    seed = param("experiment.seed", int, default=42)
+    seed = param("seed", int, default=42)
     monkeypatch.setattr(ornamentalist, "_OPERATING_MODE", ornamentalist.OperatingMode.DISABLED)
     assert seed() == 42
 
 
 def test_param_disabled_mode_no_default(monkeypatch):
     """Tests that a param without default raises when ornamentalist is disabled."""
-    seed = param("experiment.seed", int)
+    seed = param("seed", int)
     monkeypatch.setattr(ornamentalist, "_OPERATING_MODE", ornamentalist.OperatingMode.DISABLED)
     with pytest.raises(ValueError, match="disabled"):
         seed()
@@ -344,14 +344,14 @@ def test_param_disabled_mode_no_default(monkeypatch):
 def test_param_default_mode_with_default(monkeypatch):
     """Tests that a param returns its default (with warning) when setup has not been called."""
     monkeypatch.setattr(ornamentalist, "_OPERATING_MODE", ornamentalist.OperatingMode.DEFAULT)
-    seed = param("experiment.seed", int, default=7)
+    seed = param("seed", int, default=7)
     assert seed() == 7
 
 
 def test_param_default_mode_no_default(monkeypatch):
     """Tests that a param without default raises when setup has not been called."""
     monkeypatch.setattr(ornamentalist, "_OPERATING_MODE", ornamentalist.OperatingMode.DEFAULT)
-    seed = param("experiment.seed", int)
+    seed = param("seed", int)
     with pytest.raises(ValueError, match="not been called"):
         seed()
 
@@ -359,12 +359,12 @@ def test_param_default_mode_no_default(monkeypatch):
 def test_param_unsupported_type():
     """Tests that param() rejects unsupported types."""
     with pytest.raises(ValueError, match="param\\(\\) only supports types"):
-        param("experiment.data", list)
+        param("data", list)
 
 
 def test_param_cli(monkeypatch):
     """Tests that standalone params show up in the CLI."""
-    seed = param("experiment.seed", int)
+    seed = param("seed", int)
     # fmt: off
     monkeypatch.setattr(
         sys, "argv", [
@@ -372,17 +372,17 @@ def test_param_cli(monkeypatch):
             "--basic_func.a", "100",
             "--my_class.val", "1.0",
             "--literal_func.dataset", "cifar",
-            "--experiment.seed", "42",
+            "--seed", "42",
         ],)
     # fmt: on
     configs = cli()
     assert len(configs) == 1
-    assert configs[0]["experiment"]["seed"] == 42
+    assert configs[0]["seed"] == 42
 
 
 def test_param_cli_with_default(monkeypatch):
     """Tests that a param with a default is optional in the CLI."""
-    seed = param("experiment.seed", int, default=7)
+    seed = param("seed", int, default=7)
     # fmt: off
     monkeypatch.setattr(
         sys, "argv", [
@@ -393,12 +393,12 @@ def test_param_cli_with_default(monkeypatch):
         ],)
     # fmt: on
     configs = cli()
-    assert configs[0]["experiment"]["seed"] == 7
+    assert configs[0]["seed"] == 7
 
 
 def test_param_cli_sweep(monkeypatch):
     """Tests that params participate in grid search sweeps."""
-    seed = param("experiment.seed", int)
+    seed = param("seed", int)
     # fmt: off
     monkeypatch.setattr(
         sys, "argv", [
@@ -406,10 +406,70 @@ def test_param_cli_sweep(monkeypatch):
             "--basic_func.a", "100",
             "--my_class.val", "1.0",
             "--literal_func.dataset", "cifar",
-            "--experiment.seed", "1", "2", "3",
+            "--seed", "1", "2", "3",
         ],)
     # fmt: on
     configs = cli()
     assert len(configs) == 3
-    seeds = [c["experiment"]["seed"] for c in configs]
+    seeds = [c["seed"] for c in configs]
     assert seeds == [1, 2, 3]
+
+
+# --- Collision Detection Tests ---
+
+
+def test_function_name_collision():
+    """Tests that registering two functions with the same name raises ValueError."""
+    @configure(name="duplicate")
+    def func_a(x: int = Configurable):
+        return x
+
+    with pytest.raises(ValueError, match="already registered"):
+        @configure(name="duplicate")
+        def func_b(y: int = Configurable):
+            return y
+
+
+def test_param_name_collision():
+    """Tests that registering two params with the same name raises ValueError."""
+    param("seed", int)
+    with pytest.raises(ValueError, match="already registered"):
+        param("seed", float)
+
+
+def test_function_param_cross_collision():
+    """Tests that a param can't use the same name as a configured function."""
+    @configure(name="train")
+    def train_fn(lr: float = Configurable):
+        return lr
+
+    with pytest.raises(ValueError, match="conflicts with a configured function"):
+        param("train", int)
+
+
+def test_param_function_cross_collision():
+    """Tests that a function can't use the same name as a registered param."""
+    param("seed", int)
+    with pytest.raises(ValueError, match="conflicts with param"):
+        @configure(name="seed")
+        def seed_fn(x: int = Configurable):
+            return x
+
+
+# --- Config Immutability Tests ---
+
+
+def test_get_config_immutable_top_level():
+    """Tests that the top-level config dict returned by get_config() is immutable."""
+    setup({"basic_func": {"a": 1, "b": 2}})
+    config = get_config()
+    with pytest.raises(TypeError):
+        config["new_key"] = "bad"
+
+
+def test_get_config_immutable_nested():
+    """Tests that nested dicts in get_config() are immutable."""
+    setup({"basic_func": {"a": 1, "b": 2}})
+    config = get_config()
+    with pytest.raises(TypeError):
+        config["basic_func"]["a"] = 999

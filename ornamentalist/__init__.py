@@ -11,10 +11,10 @@ Quick reference (for humans and coding agents):
         ...
 
     # 2. For standalone values, use param() instead of a wrapper function
-    seed = ornamentalist.param("experiment.seed", int, default=42)
+    seed = ornamentalist.param("seed", int, default=42)
 
     # 3. Create config and call setup() before any configurable functions
-    config = {"train": {"lr": 0.01, "epochs": 20}, "experiment": {"seed": 123}}
+    config = {"train": {"lr": 0.01, "epochs": 20}, "seed": 123}
     ornamentalist.setup(config)
     train()              # lr=0.01, epochs=20
     seed()               # 123
@@ -68,10 +68,10 @@ __all__ = [
 
 # --- types ---
 
-ConfigDict: typing.TypeAlias = dict[str, dict[str, typing.Any]]
-"""A nested dict mapping function names to dicts containing
-their parameters and values. Input format for ornamentalist.setup().
-Example: config = {"my_func": {"param_1": value_1, "param_2": value_2}}
+ConfigDict: typing.TypeAlias = dict[str, dict[str, typing.Any] | typing.Any]
+"""A dict mapping names to configuration values. Functions map to dicts
+of their parameters; standalone params map to scalar values.
+Example: config = {"my_func": {"param_1": value_1}, "seed": 42}
 """
 
 
@@ -122,7 +122,11 @@ class _ConfigurableFn:
             fn_name = (
                 f"{self.original_func.__module__}.{self.original_func.__qualname__}"
             )
-            config = get_config()
+            if _GLOBAL_CONFIG is None or not _CONFIG_IS_SET:
+                raise ValueError(
+                    "Attempted to get config before `setup` has been called."
+                )
+            config = _GLOBAL_CONFIG
             if self.name not in config:
                 raise KeyError(
                     f"Configuration for '{self.name}' not found in config. "
@@ -159,7 +163,6 @@ class _ConfigurableFn:
 
 @dataclasses.dataclass
 class _ConfigurableParam:
-    group: str
     name: str
     type: type
     default: typing.Any = _NotGiven
@@ -169,32 +172,26 @@ class _ConfigurableParam:
             if self.default is not _NotGiven:
                 return self.default
             raise ValueError(
-                f"ornamentalist is disabled and no default was provided for param '{self.group}.{self.name}'"
+                f"ornamentalist is disabled and no default for param '{self.name}'"
             )
         if _OPERATING_MODE is OperatingMode.DEFAULT:
             log.warning(
-                f"Param '{self.group}.{self.name}' accessed before ornamentalist.setup() was called. "
+                f"Param '{self.name}' accessed before ornamentalist.setup() was called. "
                 "Defaulting to pass-through behaviour."
             )
             if self.default is not _NotGiven:
                 return self.default
             raise ValueError(
-                f"ornamentalist.setup() has not been called and no default for param '{self.group}.{self.name}'"
+                f"ornamentalist.setup() has not been called and no default for param '{self.name}'"
             )
-        config = get_config()
-        group_config = config.get(self.group, {})
-        if self.name in group_config:
-            return group_config[self.name]
+        config = _GLOBAL_CONFIG
+        if self.name in config:
+            return config[self.name]
         if self.default is not _NotGiven:
             return self.default
         raise KeyError(
-            f"'{self.group}.{self.name}' not found in config and no default provided"
+            f"'{self.name}' not found in config and no default provided"
         )
-
-
-@dataclasses.dataclass(frozen=True)
-class _Cfg:
-    config: dict
 
 
 # --- global state ---
@@ -207,10 +204,9 @@ class OperatingMode(enum.Enum):
 
 
 _OPERATING_MODE = OperatingMode.DEFAULT
-_GLOBAL_CONFIG: _Cfg | None = None
+_GLOBAL_CONFIG: ConfigDict | None = None
 _CONFIG_IS_SET = False
-_CONFIGURABLE_FUNCTIONS: list[_ConfigurableFn] = []
-_CONFIGURABLE_PARAMS: list[_ConfigurableParam] = []
+_REGISTRY: dict[str, _ConfigurableFn | _ConfigurableParam] = {}
 
 
 # --- core ---
@@ -245,22 +241,28 @@ def setup(config: ConfigDict, force: bool = False) -> None:
         )
 
     if force:
-        for f in _CONFIGURABLE_FUNCTIONS:
-            f.reset()
+        for entry in _REGISTRY.values():
+            if isinstance(entry, _ConfigurableFn):
+                entry.reset()
 
     if not config:
         log.warning("The configuration is empty. No parameters will be injected.")
 
-    c = _Cfg(config)
-    _GLOBAL_CONFIG = c
+    _GLOBAL_CONFIG = config
     _CONFIG_IS_SET = True
 
 
 def get_config() -> ConfigDict:
-    """Returns the ConfigDict that you used in ornamentalist.setup()."""
+    """Returns an immutable view of the ConfigDict used in ornamentalist.setup()."""
     if _GLOBAL_CONFIG is None or not _CONFIG_IS_SET:
         raise ValueError("Attempted to get config before `setup` has been called.")
-    return _GLOBAL_CONFIG.config
+    result = {}
+    for k, v in _GLOBAL_CONFIG.items():
+        if isinstance(v, dict):
+            result[k] = types.MappingProxyType(v)
+        else:
+            result[k] = v
+    return types.MappingProxyType(result)
 
 
 def configure(name: str | None = None, verbose: bool = False):
@@ -308,6 +310,20 @@ def configure(name: str | None = None, verbose: bool = False):
                 log.info("No Configurable parameters found, returning function as-is.")
             return func
 
+        if name in _REGISTRY:
+            existing = _REGISTRY[name]
+            if isinstance(existing, _ConfigurableFn):
+                raise ValueError(
+                    f"Name '{name}' is already registered by "
+                    f"{existing.original_func.__module__}.{existing.original_func.__qualname__}. "
+                    f"Use @configure(name=...) to disambiguate."
+                )
+            else:
+                raise ValueError(
+                    f"Name '{name}' conflicts with param '{name}'. "
+                    f"Use @configure(name=...) to disambiguate."
+                )
+
         configurable_fn = _ConfigurableFn(
             original_func=func,
             name=name,
@@ -316,7 +332,7 @@ def configure(name: str | None = None, verbose: bool = False):
             verbose=verbose,
             defaults=defaults,
         )
-        _CONFIGURABLE_FUNCTIONS.append(configurable_fn)
+        _REGISTRY[name] = configurable_fn
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -327,14 +343,14 @@ def configure(name: str | None = None, verbose: bool = False):
     return decorator
 
 
-def param(key: str, type: type, default: typing.Any = _NotGiven) -> _ConfigurableParam:
+def param(name: str, type: type, default: typing.Any = _NotGiven) -> _ConfigurableParam:
     """Register a standalone configurable value without needing a wrapper function.
 
     Usage:
     ```python
-        seed = ornamentalist.param("experiment.seed", int, default=42)
+        seed = ornamentalist.param("seed", int, default=42)
 
-        config = {"experiment": {"seed": 123}}
+        config = {"seed": 123}
         ornamentalist.setup(config)
         torch.manual_seed(seed())  # returns 123
     ```
@@ -342,9 +358,17 @@ def param(key: str, type: type, default: typing.Any = _NotGiven) -> _Configurabl
     ALLOWED_TYPES = [int, float, bool, str]
     if type not in ALLOWED_TYPES:
         raise ValueError(f"param() only supports types {ALLOWED_TYPES}, got {type}")
-    group, name = key.split(".", 1)
-    p = _ConfigurableParam(group=group, name=name, type=type, default=default)
-    _CONFIGURABLE_PARAMS.append(p)
+    if name in _REGISTRY:
+        existing = _REGISTRY[name]
+        if isinstance(existing, _ConfigurableParam):
+            raise ValueError(f"Param '{name}' is already registered.")
+        else:
+            raise ValueError(
+                f"Param name '{name}' conflicts with a configured function. "
+                f"Choose a different name or use @configure(name=...) on the function."
+            )
+    p = _ConfigurableParam(name=name, type=type, default=default)
+    _REGISTRY[name] = p
     return p
 
 
@@ -385,9 +409,9 @@ def _namespace2dict(config_ns: argparse.Namespace) -> ConfigDict:
     for flat_key, value in vars(config_ns).items():
         if "." in flat_key:
             fn_name, param_name = flat_key.split(".", 1)
-            if fn_name not in config_dict:
-                config_dict[fn_name] = {}
-            config_dict[fn_name][param_name] = value
+            config_dict.setdefault(fn_name, {})[param_name] = value
+        else:
+            config_dict[flat_key] = value
     return config_dict
 
 
@@ -438,107 +462,104 @@ def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
     if parser is None:
         parser = argparse.ArgumentParser()
 
-    for f in _CONFIGURABLE_FUNCTIONS:
-        fn_name = f"{f.original_func.__module__}.{f.original_func.__qualname__}"
-        group = parser.add_argument_group(
-            f.name, description=f"Hyperparameters for {fn_name}"
-        )
+    for entry in _REGISTRY.values():
+        if isinstance(entry, _ConfigurableFn):
+            f = entry
+            fn_name = f"{f.original_func.__module__}.{f.original_func.__qualname__}"
+            group = parser.add_argument_group(
+                f.name, description=f"Hyperparameters for {fn_name}"
+            )
 
-        for param_name in f.params_to_inject:
-            param = f.signature.parameters[param_name]
-            assert isinstance(param.default, _Configurable)
-            anno = param.annotation
-            kwargs = {}
-            kwargs["metavar"] = "\b"
+            for param_name in f.params_to_inject:
+                param = f.signature.parameters[param_name]
+                assert isinstance(param.default, _Configurable)
+                anno = param.annotation
+                kwargs = {}
+                kwargs["metavar"] = "\b"
 
-            origin, args = typing.get_origin(anno), typing.get_args(anno)
-            if origin is types.UnionType:
-                arg_type = [t for t in args if t is not None][0]
-                if (
-                    len(args) != 2
-                    or types.NoneType not in args
-                    or arg_type not in [str, int, float]
-                ):
-                    raise ValueError(
-                        "Union types are only supported between int/str/float "
-                        f"and None, got {args}."
+                origin, args = typing.get_origin(anno), typing.get_args(anno)
+                if origin is types.UnionType:
+                    arg_type = [t for t in args if t is not None][0]
+                    if (
+                        len(args) != 2
+                        or types.NoneType not in args
+                        or arg_type not in [str, int, float]
+                    ):
+                        raise ValueError(
+                            "Union types are only supported between int/str/float "
+                            f"and None, got {args}."
+                        )
+
+                    kwargs["type"] = functools.partial(_cast_or_none, t=arg_type)
+                    kwargs["help"] = f"Type: {arg_type.__qualname__} | None"
+
+                elif origin is typing.Literal:
+                    if not args:
+                        log.warning(
+                            f"Parameter '{param_name}' in {f.name} has an empty Literal "
+                            "annotation. Skipping."
+                        )
+                        continue
+
+                    arg_type = type(args[0])
+                    if not all(isinstance(arg, arg_type) for arg in args):
+                        raise ValueError(
+                            f"All choices in Literal for '{param_name}' in {f.name} "
+                            "must be of the same type."
+                        )
+
+                    if arg_type not in [str, int, float]:
+                        raise ValueError(
+                            f"Literal type for '{param_name}' in {f.name} must contain "
+                            f"str, int, or float, but got {arg_type}."
+                        )
+                    kwargs["type"] = arg_type
+                    kwargs["choices"] = args
+                    kwargs["help"] = f"Type: {arg_type.__qualname__}, choices: {args}"
+
+                else:
+                    if anno is inspect.Parameter.empty:
+                        msg = (
+                            f"No type annotation was provided for '{param_name}' "
+                            + f"in function {fn_name}.\nArgparse will default to treating "
+                            + "it as a string and you will have to manually cast to other types."
+                        )
+                        log.warning(msg)
+
+                    if anno not in ALLOWED_TYPES and anno is not inspect.Parameter.empty:
+                        msg = (
+                            f"Tried to create a parser for {fn_name}, but "
+                            + f"parameter '{param_name}' has type annotation '{anno}'.\n"
+                            + "Automatic parser generation only works with types: "
+                            f"{ALLOWED_TYPES + [typing.Literal]}.\n"
+                            + "(If you provide no annotation, argparse will treat it as 'str')"
+                        )
+                        raise ValueError(msg)
+
+                    type_name = (
+                        anno.__qualname__
+                        if anno is not inspect.Parameter.empty
+                        else "Unknown [string fallback]"
                     )
+                    kwargs["help"] = f"Type: {type_name}"
 
-                kwargs["type"] = functools.partial(_cast_or_none, t=arg_type)
-                kwargs["help"] = f"Type: {arg_type.__qualname__} | None"
+                    if anno is bool:
+                        kwargs["type"] = _str2bool
+                    elif anno is not inspect.Parameter.empty:
+                        kwargs["type"] = anno
 
-            elif origin is typing.Literal:
-                if not args:
-                    log.warning(
-                        f"Parameter '{param_name}' in {f.name} has an empty Literal "
-                        "annotation. Skipping."
-                    )
-                    continue
+                if f.defaults is not None and param_name in f.defaults:
+                    kwargs["default"] = f.defaults[param_name]
+                    kwargs["help"] += f" (optional), default={f.defaults[param_name]}"
+                else:
+                    kwargs["required"] = True
+                    kwargs["help"] += " (required)"
 
-                arg_type = type(args[0])
-                if not all(isinstance(arg, arg_type) for arg in args):
-                    raise ValueError(
-                        f"All choices in Literal for '{param_name}' in {f.name} "
-                        "must be of the same type."
-                    )
+                kwargs["nargs"] = "+"
+                group.add_argument(f"--{f.name}.{param_name}", **kwargs)
 
-                if arg_type not in [str, int, float]:
-                    raise ValueError(
-                        f"Literal type for '{param_name}' in {f.name} must contain "
-                        f"str, int, or float, but got {arg_type}."
-                    )
-                kwargs["type"] = arg_type
-                kwargs["choices"] = args
-                kwargs["help"] = f"Type: {arg_type.__qualname__}, choices: {args}"
-
-            else:
-                if anno is inspect.Parameter.empty:
-                    msg = (
-                        f"No type annotation was provided for '{param_name}' "
-                        + f"in function {fn_name}.\nArgparse will default to treating "
-                        + "it as a string and you will have to manually cast to other types."
-                    )
-                    log.warning(msg)
-
-                if anno not in ALLOWED_TYPES and anno is not inspect.Parameter.empty:
-                    msg = (
-                        f"Tried to create a parser for {fn_name}, but "
-                        + f"parameter '{param_name}' has type annotation '{anno}'.\n"
-                        + "Automatic parser generation only works with types: "
-                        f"{ALLOWED_TYPES + [typing.Literal]}.\n"
-                        + "(If you provide no annotation, argparse will treat it as 'str')"
-                    )
-                    raise ValueError(msg)
-
-                type_name = (
-                    anno.__qualname__
-                    if anno is not inspect.Parameter.empty
-                    else "Unknown [string fallback]"
-                )
-                kwargs["help"] = f"Type: {type_name}"
-
-                if anno is bool:
-                    kwargs["type"] = _str2bool
-                elif anno is not inspect.Parameter.empty:
-                    kwargs["type"] = anno
-
-            if f.defaults is not None and param_name in f.defaults:
-                kwargs["default"] = f.defaults[param_name]
-                kwargs["help"] += f" (optional), default={f.defaults[param_name]}"
-            else:
-                kwargs["required"] = True
-                kwargs["help"] += " (required)"
-
-            kwargs["nargs"] = "+"
-            group.add_argument(f"--{f.name}.{param_name}", **kwargs)
-
-    param_groups: dict[str, list[_ConfigurableParam]] = {}
-    for p in _CONFIGURABLE_PARAMS:
-        param_groups.setdefault(p.group, []).append(p)
-
-    for group_name, params in param_groups.items():
-        group = parser.add_argument_group(group_name)
-        for p in params:
+        elif isinstance(entry, _ConfigurableParam):
+            p = entry
             kwargs = {"metavar": "\b"}
             kwargs["help"] = f"Type: {p.type.__qualname__}"
             if p.type is bool:
@@ -552,7 +573,7 @@ def cli(parser: argparse.ArgumentParser | None = None) -> list[ConfigDict]:
                 kwargs["required"] = True
                 kwargs["help"] += " (required)"
             kwargs["nargs"] = "+"
-            group.add_argument(f"--{p.group}.{p.name}", **kwargs)
+            parser.add_argument(f"--{p.name}", **kwargs)
 
     args_dict = vars(parser.parse_args())
     param_names = sorted(args_dict.keys())
